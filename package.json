@@ -1,0 +1,55 @@
+{
+  "name": "koishi-plugin-jandan",
+  "description": "每天定时推送煎蛋热榜无聊图",
+  "version": "1.0.0",
+  "main": "lib/index.js",
+  "typings": "lib/index.d.ts",
+  "files": [
+    "lib"
+  ],
+  "license": "MIT",
+  "author": "K4F7",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/K4F7/koishi-plugin-jandan.git"
+  },
+  "homepage": "https://github.com/K4F7/koishi-plugin-jandan",
+  "bugs": {
+    "url": "https://github.com/K4F7/koishi-plugin-jandan/issues"
+  },
+  "publishConfig": {
+    "access": "public"
+  },
+  "scripts": {
+    "build": "tsc -b",
+    "test": "tsx --test tests/*.spec.ts"
+  },
+  "keywords": [
+    "chatbot",
+    "koishi",
+    "plugin",
+    "jandan",
+    "煎蛋",
+    "无聊图"
+  ],
+  "peerDependencies": {
+    "koishi": "^4.18.7"
+  },
+  "devDependencies": {
+    "@types/node": "^22.7.5",
+    "koishi": "^4.18.7",
+    "tsx": "^4.16.2",
+    "typescript": "^5.6.2"
+  },
+  "koishi": {
+    "description": {
+      "zh": "每天定时推送煎蛋热榜无聊图 / 随手拍",
+      "en": "Push Jandan hot boring pictures and ooxx on a schedule"
+    },
+    "service": {
+      "required": [
+        "http"
+      ]
+    }
+  }
+}
