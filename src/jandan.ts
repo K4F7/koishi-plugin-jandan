@@ -124,7 +124,10 @@ const httpHeaders = { Referer: REFERER }
 
 export async function fetchList(http: HTTP, kind: ListKind): Promise<JandanPost[]> {
   const body = await http.get<TopResponse>(LIST_ENDPOINTS[kind], { headers: httpHeaders })
-  return body?.data ?? []
+  if (!body || body.code !== 0) {
+    throw new Error(body?.msg || `failed to fetch ${kind}`)
+  }
+  return body.data ?? []
 }
 
 export async function downloadImage(http: HTTP, url: string, skipGif: boolean): Promise<PreparedImage | null> {
@@ -176,10 +179,10 @@ export function pickRandomImage(lists: PreparedPost[][]): PreparedImage | null {
 }
 
 export async function buildPayload(http: HTTP, kinds: ListKind[], skipGif: boolean) {
-  const prepared: { kind: ListKind; label: string; posts: PreparedPost[] }[] = []
+  const prepared: { label: string; posts: PreparedPost[] }[] = []
   for (const kind of kinds) {
     const posts = await preparePosts(http, await fetchList(http, kind), skipGif)
-    if (posts.length) prepared.push({ kind, label: LIST_LABELS[kind], posts })
+    if (posts.length) prepared.push({ label: LIST_LABELS[kind], posts })
   }
   return prepared
 }

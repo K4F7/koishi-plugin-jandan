@@ -81,7 +81,7 @@ export function apply(ctx: Context, config: Config) {
     }
   }
 
-  async function push(kinds: ListKind[], random: boolean) {
+  async function buildMessage(kinds: ListKind[], random: boolean) {
     const prepared = await buildPayload(ctx.http, kinds, config.skipGif)
     if (!prepared.length) return null
     if (random) {
@@ -92,17 +92,18 @@ export function apply(ctx: Context, config: Config) {
     return composeForward(prepared)
   }
 
-  ctx.command('jandan <names:text>', '获取煎蛋热榜')
+  ctx.command('jandan [...names:string]', '获取煎蛋热榜')
     .alias('煎蛋')
     .option('random', '-r 从所选榜随机发送一张')
-    .action(async ({ session, options }, names) => {
+    .action(async ({ session, options }, ...names) => {
       if (!session) return
-      if (!names?.trim()) return USAGE
-      const { lists, unknown } = parseListNames(names)
+      const input = names.filter(Boolean).join(' ')
+      if (!input) return USAGE
+      const { lists, unknown } = parseListNames(input)
       if (unknown.length) return `未知榜单：${unknown.join('、')}\n${USAGE}`
       if (!lists.length) return USAGE
       try {
-        const payload = await push(lists, !!options?.random)
+        const payload = await buildMessage(lists, !!options?.random)
         if (!payload) return '没有可发送的图片。'
         await session.send(payload)
       } catch (error) {
@@ -114,7 +115,7 @@ export function apply(ctx: Context, config: Config) {
   const schedule = async () => {
     if (!config.targets.length || !config.lists.length) return
     try {
-      const payload = await push(config.lists, false)
+      const payload = await buildMessage(config.lists, false)
       if (payload) await sendToTargets(payload)
     } catch (error) {
       logger.warn(error)
