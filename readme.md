@@ -33,49 +33,6 @@ jandan 4小时 -r
 
 依赖 Koishi 的 `http` 服务（`inject: ['http']`）。
 
-
-## FAQ
-
-<details>
-<summary><strong>为什么裸打 <code>jandan</code> 没有图？</strong></summary>
-
-指令必须带榜单名。裸指令只会返回用法提示。
-</details>
-
-<details>
-<summary><strong>定时推送没发出去？</strong></summary>
-
-检查 `targets` 是否填了 `platform` / `selfId` / `channelId`，以及对应 bot 是否在线。`lists` 为空或 `targets` 为空时定时任务会直接跳过。时刻按**服务器本地时区**计算。
-</details>
-
-<details>
-<summary><strong>为什么有的平台看不到嵌套转发？</strong></summary>
-
-插件只构造 Koishi 的 `forward` 元素。不支持嵌套转发的平台由适配器回退，不是插件另发多条消息。
-</details>
-
-<details>
-<summary><strong>图片从哪里来？</strong></summary>
-
-从每条帖子 `content` 里的 `<img src>` 解析。接口字段 `images` 经常为空，插件不依赖它。
-</details>
-
-## Troubleshooting
-
-**没有可发送的图片**
-
-该榜当前没有可下载的图，或全部被 `skipGif` 滤掉了。换一个榜或关掉 `skipGif` 再试。
-
-**拉取出错了，一会儿再试**
-
-煎蛋 API 或图床请求失败。看 Koishi 日志里的 `jandan` logger。请求带 `Referer: https://jandan.net/top`。
-
-**no bot for platform:selfId**
-
-`targets` 里的 `platform` / `selfId` 和实际登录的 bot 对不上。
-
-
-
 ## Changelog
 
 当前版本 **1.0.0**：定时推送煎蛋热榜、手动指令、合并 / 嵌套转发、随机单张、可选跳过 GIF。
