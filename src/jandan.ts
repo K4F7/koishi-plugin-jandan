@@ -44,13 +44,17 @@ export interface JandanPost {
 }
 
 export interface PreparedImage {
-  data: Buffer
-  mime: string
+  url: string
 }
 
 export interface PreparedPost {
   author: string
   images: PreparedImage[]
+}
+
+export interface PreparedList {
+  label: string
+  posts: PreparedPost[]
 }
 
 interface TopResponse {
@@ -130,14 +134,14 @@ export async function fetchList(http: HTTP, kind: ListKind): Promise<JandanPost[
   return body.data ?? []
 }
 
-export async function downloadImage(http: HTTP, url: string, skipGif: boolean): Promise<PreparedImage | null> {
+export async function downloadImage(http: HTTP, url: string, skipGif: boolean): Promise<Buffer | null> {
   if (skipGif && isGifUrl(url)) return null
   const data = Buffer.from(await http.get<ArrayBuffer>(url, {
     headers: httpHeaders,
     responseType: 'arraybuffer',
   }))
   if (skipGif && isGifBuffer(data)) return null
-  return { data, mime: detectMime(data) }
+  return data
 }
 
 export async function preparePosts(http: HTTP, posts: JandanPost[], skipGif: boolean): Promise<PreparedPost[]> {
@@ -145,31 +149,37 @@ export async function preparePosts(http: HTTP, posts: JandanPost[], skipGif: boo
   for (const post of posts) {
     const images: PreparedImage[] = []
     for (const url of extractImageUrls(post.content ?? '')) {
-      try {
-        const image = await downloadImage(http, url, skipGif)
-        if (image) images.push(image)
-      } catch {
-        // skip a single failed image
+      if (skipGif && isGifUrl(url)) continue
+      if (skipGif) {
+        try {
+          const data = await downloadImage(http, url, true)
+          if (!data) continue
+        } catch {
+          continue
+        }
       }
+      images.push({ url })
     }
     if (images.length) prepared.push({ author: post.author || '匿名', images })
   }
   return prepared
 }
 
+export function packImageNodes(posts: PreparedPost[]) {
+  return posts.flatMap(post => post.images.map(image => h('message', [h.image(image.url)])))
+}
+
 export function packListForward(label: string, posts: PreparedPost[]) {
-  const nodes = posts.map(post => h('message', [
-    h('author', { name: post.author }),
-    ...post.images.map(image => h.image(image.data, image.mime)),
-  ]))
   return h('message', { forward: true }, [
     h('message', [h('author', { name: '煎蛋热榜' }), label]),
-    ...nodes,
+    ...packImageNodes(posts),
   ])
 }
 
-export function packNestedForward(lists: ReturnType<typeof packListForward>[]) {
-  return h('message', { forward: true }, lists)
+export function composeForward(prepared: PreparedList[]) {
+  const label = prepared.map(item => item.label).join(' ')
+  const posts = prepared.flatMap(item => item.posts)
+  return packListForward(label, posts)
 }
 
 export function pickRandomImage(lists: PreparedPost[][]): PreparedImage | null {
@@ -179,16 +189,10 @@ export function pickRandomImage(lists: PreparedPost[][]): PreparedImage | null {
 }
 
 export async function buildPayload(http: HTTP, kinds: ListKind[], skipGif: boolean) {
-  const prepared: { label: string; posts: PreparedPost[] }[] = []
+  const prepared: PreparedList[] = []
   for (const kind of kinds) {
     const posts = await preparePosts(http, await fetchList(http, kind), skipGif)
     if (posts.length) prepared.push({ label: LIST_LABELS[kind], posts })
   }
   return prepared
-}
-
-export function composeForward(prepared: { label: string; posts: PreparedPost[] }[]) {
-  const packed = prepared.map(item => packListForward(item.label, item.posts))
-  if (packed.length === 1) return packed[0]
-  return packNestedForward(packed)
 }

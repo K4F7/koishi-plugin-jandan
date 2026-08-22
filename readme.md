@@ -6,18 +6,18 @@
 [![Koishi](https://img.shields.io/badge/Koishi-4-026d4d?style=flat-square)](https://koishi.chat/)
 [![PRs Welcome](https://img.shields.io/badge/PRs-welcome-brightgreen.svg?style=flat-square)](https://github.com/K4F7/koishi-plugin-jandan/pulls)
 
-每天定时推送 [煎蛋](https://jandan.net/) 热榜无聊图 / 随手拍。手动指令按榜单名拉取；单榜合并转发，多榜再包一层嵌套转发。
+每天定时推送 [煎蛋](https://jandan.net/) 热榜无聊图 / 随手拍。手动指令按榜单名拉取；整次请求打成一条合并转发（第一条是榜名，后面只发图）。
 
-Push Jandan hot boring pictures and ooxx on a schedule. Manual commands fetch by list name; one list is a single forward, multiple lists nest inside another.
+Push Jandan hot boring pictures and ooxx on a schedule. Manual commands fetch by list name; each request is a single merge-forward.
 
 ## Features
 
 - ⏰ **定时推送**：按服务器本地时区，每天在设定时刻向指定会话发送热榜
 - 📋 **多榜单**：无聊图、4 小时、3 日、7 日、随手拍，可多选
-- 🔁 **合并转发**：单榜一条 forward；多榜再包一层嵌套转发，一次发出
+- 🔁 **合并转发**：一次请求只发一条 forward；第一条是榜名，后面只发图
 - 🎲 **随机单张**：指令加 `-r` 从所选榜里随机发一张，不走合并转发
-- 🖼️ **原图下载**：从帖子 `content` 的 `<img src>` 解析图片，`/mw600/`、`/mw1024/` 升为 `/large/`
-- 🚫 **跳过 GIF**：可选按 URL 后缀 `.gif` 或文件头 `GIF8` 过滤
+- 🖼️ **原图 URL**：从帖子 `content` 的 `<img src>` 解析图片，`/mw600/`、`/mw1024/` 升为 `/large/`，把 URL 交给适配器（不把图转成 base64）
+- 🚫 **跳过 GIF**：默认开启。热榜 GIF 往往很大，容易让转发超时；按 URL 后缀 `.gif` 或文件头 `GIF8` 过滤
 - 🌐 **中英别名**：`无聊图` / `daily` / `pic` 等写法均可
 
 ## Quick Start
@@ -35,7 +35,7 @@ jandan 4小时 -r
 
 ## Changelog
 
-当前版本 **1.0.0**：定时推送煎蛋热榜、手动指令、合并 / 嵌套转发、随机单张、可选跳过 GIF。
+当前版本 **1.1.0**：一条合并转发；图片改为 URL 而不是 base64；第一条榜名，后面只发图。`skipGif` 默认开启（热榜 GIF 往往很大）。
 
 ## License
 
