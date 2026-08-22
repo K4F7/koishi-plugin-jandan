@@ -272,8 +272,24 @@ export async function preparePosts(
   return prepared
 }
 
+export const IMAGES_PER_NODE = 20
+
+export function flattenImages(posts: PreparedPost[]) {
+  return posts.flatMap(post => post.images)
+}
+
 export function packImageNodes(posts: PreparedPost[]) {
-  return posts.flatMap(post => post.images.map(image => h('message', [h.image(image.data, image.mime)])))
+  const images = flattenImages(posts)
+  const nodes: ReturnType<typeof h>[] = []
+  for (let i = 0; i < images.length; i += IMAGES_PER_NODE) {
+    const chunk = images.slice(i, i + IMAGES_PER_NODE)
+    nodes.push(h('message', chunk.map(image => h.image(image.data, image.mime))))
+  }
+  return nodes
+}
+
+export function packImageNodesEach(posts: PreparedPost[]) {
+  return flattenImages(posts).map(image => h('message', [h.image(image.data, image.mime)]))
 }
 
 export function packListForward(label: string, posts: PreparedPost[]) {
@@ -281,6 +297,53 @@ export function packListForward(label: string, posts: PreparedPost[]) {
     h('message', [h('author', { name: '煎蛋热榜' }), label]),
     ...packImageNodes(posts),
   ])
+}
+
+export function composeForwardEach(prepared: PreparedList[]) {
+  const label = prepared.map(item => item.label).join(' ')
+  const posts = prepared.flatMap(item => item.posts)
+  return h('message', { forward: true }, [
+    h('message', [h('author', { name: '煎蛋热榜' }), label]),
+    ...packImageNodesEach(posts),
+  ])
+}
+
+export function composeForwardFromUrls(label: string, urls: string[]) {
+  return h('message', { forward: true }, [
+    h('message', [h('author', { name: '煎蛋热榜' }), label]),
+    ...urls.map(url => h('message', [h.image(url)])),
+  ])
+}
+
+export function extractForwardImageSrcs(payload: unknown): string[] {
+  const urls: string[] = []
+  const seen = new Set<unknown>()
+  const visit = (value: unknown) => {
+    if (!value || typeof value !== 'object' || seen.has(value)) return
+    seen.add(value)
+    if (Array.isArray(value)) {
+      for (const item of value) visit(item)
+      return
+    }
+    const rec = value as Record<string, unknown>
+    const data = rec.data
+    if ((rec.type === 'image' || rec.type === 'img') && data && typeof data === 'object') {
+      const fields = data as Record<string, unknown>
+      const src = [fields.url, fields.file, fields.path].find((item): item is string => (
+        typeof item === 'string'
+        && item.length > 0
+        && !item.startsWith('data:')
+        && !item.startsWith('base64://')
+      ))
+      if (src) urls.push(src)
+    }
+    visit(rec.messages)
+    visit(rec.message)
+    visit(rec.content)
+    visit(rec.data)
+  }
+  visit(payload)
+  return urls
 }
 
 export function composeForward(prepared: PreparedList[]) {

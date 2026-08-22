@@ -1,10 +1,14 @@
 import assert from 'node:assert/strict'
 import { describe, it } from 'node:test'
-import { isAdapterTimeout } from '../src/index'
+import { isAdapterTimeout, withResponseTimeout } from '../src/index'
 import {
+  IMAGES_PER_NODE,
   composeForward,
+  composeForwardEach,
+  composeForwardFromUrls,
   detectMime,
   encodeWebp,
+  extractForwardImageSrcs,
   extractImageUrls,
   isGifBuffer,
   isGifUrl,
@@ -104,7 +108,8 @@ describe('packListForward', () => {
     const title = el.children[0].children.find(child => child.type === 'text')
     assert.equal(title?.attrs.content, '无聊图')
     const rest = el.children.slice(1)
-    assert.equal(rest.length, 2)
+    assert.equal(rest.length, 1)
+    assert.equal(rest[0].children.length, 2)
     for (const node of rest) {
       assert.equal(node.children.every(child => child.type === 'img'), true)
       assert.equal(node.children.some(child => child.type === 'author' || child.type === 'text'), false)
@@ -113,6 +118,14 @@ describe('packListForward', () => {
     assert.equal(src.startsWith('data:image/jpeg;base64,'), true)
     assert.equal(src.includes('img.example.com'), false)
   })
+
+  it('packs images into nodes of IMAGES_PER_NODE', () => {
+    const el = packListForward('4小时', fakePosts(IMAGES_PER_NODE + 1))
+    const rest = el.children.slice(1)
+    assert.equal(rest.length, 2)
+    assert.equal(rest[0].children.length, IMAGES_PER_NODE)
+    assert.equal(rest[1].children.length, 1)
+  })
 })
 
 describe('composeForward', () => {
@@ -120,7 +133,8 @@ describe('composeForward', () => {
     const packed = composeForward([{ label: '无聊图', posts: fakePosts(3) }])
     assert.equal(packed.attrs.forward, true)
     assert.equal(packed.children.some(child => child.attrs.forward), false)
-    assert.equal(packed.children.length, 4)
+    assert.equal(packed.children.length, 2)
+    assert.equal(packed.children[1].children.length, 3)
   })
 
   it('uses one title node then flattens all images', () => {
@@ -133,15 +147,62 @@ describe('composeForward', () => {
       .map(child => child.children.find(node => node.type === 'text')?.attrs.content)
       .filter(Boolean)
     assert.deepEqual(labels, ['无聊图 随手拍'])
-    assert.equal(packed.children.length, 4)
+    assert.equal(packed.children.length, 2)
     assert.equal(packed.children.slice(1).every(node => node.children.every(child => child.type === 'img')), true)
+    assert.equal(packed.children[1].children.length, 3)
   })
 
   it('keeps 21 images in a single forward', () => {
     const packed = composeForward([{ label: '4小时', posts: fakePosts(21) }])
     assert.equal(packed.attrs.forward, true)
     assert.equal(packed.children.some(child => child.attrs.forward), false)
+    const imageCount = packed.children.slice(1).reduce((sum, node) => sum + node.children.length, 0)
+    assert.equal(imageCount, 21)
+  })
+})
+
+describe('composeForwardEach', () => {
+  it('keeps a title then one image per node', () => {
+    const packed = composeForwardEach([{ label: '4小时', posts: fakePosts(21) }])
+    assert.equal(packed.attrs.forward, true)
     assert.equal(packed.children.length, 22)
+    assert.equal(packed.children.slice(1).every(node => node.children.length === 1 && node.children[0].type === 'img'), true)
+  })
+})
+
+describe('composeForwardFromUrls', () => {
+  it('builds one forward of a title plus one url image per node', () => {
+    const packed = composeForwardFromUrls('7日无聊图', [
+      'https://gchat.qpic.cn/a.jpg',
+      'https://gchat.qpic.cn/b.jpg',
+    ])
+    assert.equal(packed.attrs.forward, true)
+    assert.equal(packed.children[0].children.find(child => child.type === 'text')?.attrs.content, '7日无聊图')
+    assert.deepEqual(
+      packed.children.slice(1).map(node => node.children[0].attrs.src),
+      ['https://gchat.qpic.cn/a.jpg', 'https://gchat.qpic.cn/b.jpg'],
+    )
+  })
+})
+
+describe('extractForwardImageSrcs', () => {
+  it('reads image url/file from nested forward nodes and skips base64', () => {
+    const srcs = extractForwardImageSrcs({
+      messages: [
+        { type: 'node', data: { content: [{ type: 'text', data: { text: '7日无聊图' } }] } },
+        {
+          type: 'node',
+          data: {
+            message: [
+              { type: 'image', data: { url: 'https://gchat.qpic.cn/a.jpg', file: 'a.jpg' } },
+              { type: 'image', data: { file: 'base64://UklGR' } },
+              { type: 'image', data: { file: 'b.jpg' } },
+            ],
+          },
+        },
+      ],
+    })
+    assert.deepEqual(srcs, ['https://gchat.qpic.cn/a.jpg', 'b.jpg'])
   })
 })
 
@@ -262,5 +323,37 @@ describe('isAdapterTimeout', () => {
     )
     assert.equal(isAdapterTimeout(new Error('network down')), false)
     assert.equal(isAdapterTimeout('Timeout with request send_msg'), true)
+  })
+})
+
+describe('withResponseTimeout', () => {
+  it('raises responseTimeout for the call and restores it after', async () => {
+    const bot = { config: { responseTimeout: 60_000 } }
+    const seen: number[] = []
+    const result = await withResponseTimeout(bot, 600_000, async () => {
+      seen.push(bot.config.responseTimeout)
+      return 'ok'
+    })
+    assert.equal(result, 'ok')
+    assert.deepEqual(seen, [600_000])
+    assert.equal(bot.config.responseTimeout, 60_000)
+  })
+
+  it('restores responseTimeout when the call throws', async () => {
+    const bot = { config: { responseTimeout: 60_000 } }
+    await assert.rejects(
+      () => withResponseTimeout(bot, 600_000, async () => {
+        throw new Error('boom')
+      }),
+      /boom/,
+    )
+    assert.equal(bot.config.responseTimeout, 60_000)
+  })
+
+  it('skips bots without responseTimeout', async () => {
+    const bot = { config: {} as { responseTimeout?: number } }
+    await withResponseTimeout(bot, 600_000, async () => {
+      assert.equal(bot.config.responseTimeout, undefined)
+    })
   })
 })

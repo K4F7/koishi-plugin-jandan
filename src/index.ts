@@ -2,8 +2,13 @@ import { Bot, Context, Element, Schema, Session, h } from 'koishi'
 import {
   DEFAULT_MAX_IMAGE_BYTES,
   ListKind,
+  PreparedList,
   buildPayload,
   composeForward,
+  composeForwardEach,
+  composeForwardFromUrls,
+  extractForwardImageSrcs,
+  flattenImages,
   parseListNames,
   pickRandomImage,
 } from './jandan'
@@ -19,6 +24,7 @@ export const usage = `
 `
 
 export const DEFAULT_WAIT_TIP = '正在解析煎蛋热榜…'
+export const DEFAULT_SEND_TIMEOUT = 10 * 60 * 1000
 
 const ListKindSchema = Schema.union([
   Schema.const('daily').description('每日无聊图'),
@@ -42,6 +48,7 @@ export interface Config {
   skipGif: boolean
   maxImageMB: number
   waitTip: string
+  sendTimeout: number
   targets: Target[]
 }
 
@@ -51,7 +58,8 @@ export const Config: Schema<Config> = Schema.object({
   minute: Schema.number().min(0).max(59).default(0).description('推送分钟。'),
   skipGif: Schema.boolean().default(true).description('跳过全部 GIF。热榜 GIF 常见 5–27MB；关闭后仍受单张体积上限约束，超限的丢。'),
   maxImageMB: Schema.number().min(0).max(50).default(DEFAULT_MAX_IMAGE_BYTES / 1024 / 1024).description('单张图片最大体积（MB）。超过则跳过该张，0 表示不限制。静态图一般远低于此值。'),
-  waitTip: Schema.string().default(DEFAULT_WAIT_TIP).description('下载、转码前先发这条提示，热榜发出后再尝试撤回。留空则不发。'),
+  waitTip: Schema.string().default(DEFAULT_WAIT_TIP).description('下载、转码前先发这条提示。发出后默认不撤回。留空则不发。'),
+  sendTimeout: Schema.number().min(0).role('time').default(DEFAULT_SEND_TIMEOUT).description('发送合并转发时，临时把 OneBot 适配器的 responseTimeout 调到这个值（毫秒）。0 表示不改。'),
   targets: Schema.array(Schema.object({
     platform: Schema.string().required().description('平台名称。'),
     selfId: Schema.string().required().description('机器人 ID。'),
@@ -73,6 +81,23 @@ export function isAdapterTimeout(error: unknown) {
   return /Timeout with request/i.test(text)
 }
 
+export async function withResponseTimeout<T>(
+  bot: { config: { responseTimeout?: number } },
+  timeout: number,
+  fn: () => Promise<T>,
+): Promise<T> {
+  if (!timeout || !('responseTimeout' in bot.config)) return fn()
+  const config = bot.config
+  const prev = config.responseTimeout
+  config.responseTimeout = Math.max(prev ?? 0, timeout)
+  const applied = config.responseTimeout
+  try {
+    return await fn()
+  } finally {
+    if (config.responseTimeout === applied) config.responseTimeout = prev
+  }
+}
+
 function shortError(error: unknown) {
   const text = error instanceof Error ? error.message : String(error)
   return text.split(', args:')[0]
@@ -90,6 +115,10 @@ async function recall(bot: { deleteMessage(channelId: string, id: string): Promi
   } catch {
     // 部分协议端不允许撤回
   }
+}
+
+type OneBotInternal = {
+  getForwardMsg?(id: string): Promise<unknown>
 }
 
 const USAGE = '用法：jandan <榜单名...> [-r]\n榜单：无聊图 / 随手拍 / 4小时 / 3日 / 7日（也可用 daily / ooxx / 4hr / 3d / 7d）'
@@ -124,47 +153,81 @@ export function apply(ctx: Context, config: Config) {
   }
 
   async function notifyTargets(content: string) {
-    const sent: { bot: Bot; channelId: string; id?: string }[] = []
-    for (const target of config.targets) {
-      const bot = findTargetBot(target)
-      if (!bot) continue
-      try {
-        sent.push({
-          bot,
-          channelId: target.channelId,
-          id: firstMessageId(await bot.sendMessage(target.channelId, content, target.guildId)),
-        })
-      } catch (error) {
-        logger.warn(error)
-      }
-    }
-    return sent
-  }
-
-  async function sendToTargets(content: Element) {
     for (const target of config.targets) {
       const bot = findTargetBot(target)
       if (!bot) continue
       try {
         await bot.sendMessage(target.channelId, content, target.guildId)
       } catch (error) {
-        logSendError(error)
+        logger.warn(error)
       }
     }
   }
 
-  async function buildMessage(kinds: ListKind[], random: boolean) {
-    const prepared = await buildPayload(ctx.http, kinds, {
+  async function sendPayload(bot: Bot, send: () => Promise<unknown>) {
+    try {
+      const result = await withResponseTimeout(bot, config.sendTimeout, send)
+      return { id: firstMessageId(result as string | string[] | void | null) }
+    } catch (error) {
+      logSendError(error)
+      return { error }
+    }
+  }
+
+  async function readForwardImages(bot: Bot, messageId: string) {
+    const internal = (bot as Bot & { internal?: OneBotInternal }).internal
+    if (!internal?.getForwardMsg) return []
+    try {
+      return extractForwardImageSrcs(await internal.getForwardMsg(messageId))
+    } catch (error) {
+      logger.warn(error)
+      return []
+    }
+  }
+
+  async function sendHotlist(
+    bot: Bot,
+    channelId: string,
+    prepared: PreparedList[],
+    send: (payload: Element) => Promise<unknown>,
+  ) {
+    if (bot.platform !== 'onebot') {
+      return sendPayload(bot, () => send(composeForwardEach(prepared))).then(result => result.error)
+    }
+    const images = flattenImages(prepared.flatMap(item => item.posts))
+    const packed = await sendPayload(bot, () => send(composeForward(prepared)))
+    if (packed.error && !isAdapterTimeout(packed.error)) return packed.error
+    if (!packed.id) return packed.error
+    const srcs = await readForwardImages(bot, packed.id)
+    if (srcs.length !== images.length) {
+      logger.warn('packed forward image count %d != %d, keep the packed message', srcs.length, images.length)
+      return packed.error
+    }
+    const label = prepared.map(item => item.label).join(' ')
+    const replaced = await sendPayload(bot, () => send(composeForwardFromUrls(label, srcs)))
+    if (replaced.error && !isAdapterTimeout(replaced.error)) return replaced.error
+    if (!replaced.error) await recall(bot, channelId, packed.id)
+    return replaced.error
+  }
+
+  async function sendToTargets(prepared: PreparedList[]) {
+    for (const target of config.targets) {
+      const bot = findTargetBot(target)
+      if (!bot) continue
+      await sendHotlist(
+        bot,
+        target.channelId,
+        prepared,
+        payload => bot.sendMessage(target.channelId, payload, target.guildId),
+      )
+    }
+  }
+
+  async function loadPrepared(kinds: ListKind[]) {
+    return buildPayload(ctx.http, kinds, {
       skipGif: config.skipGif,
       maxBytes: config.maxImageMB > 0 ? Math.floor(config.maxImageMB * 1024 * 1024) : 0,
     })
-    if (!prepared.length) return null
-    if (random) {
-      const image = pickRandomImage(prepared.map(item => item.posts))
-      if (!image) return null
-      return h.image(image.data, image.mime)
-    }
-    return composeForward(prepared)
   }
 
   ctx.command('jandan [...names:string]', '获取煎蛋热榜')
@@ -178,43 +241,47 @@ export function apply(ctx: Context, config: Config) {
       if (unknown.length) return `未知榜单：${unknown.join('、')}\n${USAGE}`
       if (!lists.length) return USAGE
       const waitId = await sendWait(session)
-      let payload: Element | null
+      let prepared: PreparedList[]
       try {
-        payload = await buildMessage(lists, !!options?.random)
+        prepared = await loadPrepared(lists)
       } catch (error) {
         logger.warn(error)
         await recall(session.bot, session.channelId, waitId)
         return '拉取出错了，一会儿再试。'
       }
-      if (!payload) {
+      if (!prepared.length) {
         await recall(session.bot, session.channelId, waitId)
         return '没有可发送的图片。'
       }
-      try {
-        await session.send(payload)
-      } catch (error) {
-        logSendError(error)
-        // OneBot 合并转发常在协议端已发出后才超时；再回一条失败提示会刷屏。
-        if (!isAdapterTimeout(error)) {
+      if (options?.random) {
+        const image = pickRandomImage(prepared.map(item => item.posts))
+        if (!image) {
+          await recall(session.bot, session.channelId, waitId)
+          return '没有可发送的图片。'
+        }
+        const error = (await sendPayload(session.bot, () => session.send(h.image(image.data, image.mime)))).error
+        if (error && !isAdapterTimeout(error)) {
           await recall(session.bot, session.channelId, waitId)
           return '发送失败了，一会儿再试。OneBot 超时可把适配器 responseTimeout 调大。'
         }
+        return
       }
-      await recall(session.bot, session.channelId, waitId)
+      if (!session.channelId) return '发送失败了，一会儿再试。'
+      const error = await sendHotlist(session.bot, session.channelId, prepared, payload => session.send(payload))
+      if (error && !isAdapterTimeout(error)) {
+        await recall(session.bot, session.channelId, waitId)
+        return '发送失败了，一会儿再试。OneBot 超时可把适配器 responseTimeout 调大。'
+      }
     })
 
   const schedule = async () => {
     if (!config.targets.length || !config.lists.length) return
-    const notices = waitTip ? await notifyTargets(waitTip) : []
+    if (waitTip) await notifyTargets(waitTip)
     try {
-      const payload = await buildMessage(config.lists, false)
-      if (payload) await sendToTargets(payload)
+      const prepared = await loadPrepared(config.lists)
+      if (prepared.length) await sendToTargets(prepared)
     } catch (error) {
       logger.warn(error)
-    } finally {
-      for (const notice of notices) {
-        await recall(notice.bot, notice.channelId, notice.id)
-      }
     }
   }
 
