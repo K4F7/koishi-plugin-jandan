@@ -137,6 +137,7 @@ export async function fetchList(http: HTTP, kind: ListKind): Promise<JandanPost[
 }
 
 export const DOWNLOAD_CONCURRENCY = 4
+export const UPLOAD_CONCURRENCY = 4
 export const DEFAULT_MAX_IMAGE_BYTES = 8 * 1024 * 1024
 export const WEBP_QUALITY = 80 as const
 
@@ -312,6 +313,13 @@ export function composeForwardFromUrls(label: string, urls: string[]) {
   return h('message', { forward: true }, [
     h('message', [h('author', { name: '煎蛋热榜' }), label]),
     ...urls.map(url => h('message', [h.image(url)])),
+  ])
+}
+
+export function composeForwardFromIds(label: string, ids: string[]) {
+  return h('message', { forward: true }, [
+    h('message', [h('author', { name: '煎蛋热榜' }), label]),
+    ...ids.map(id => h('message', { id })),
   ])
 }
 
