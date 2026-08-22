@@ -44,7 +44,7 @@ export const Config: Schema<Config> = Schema.object({
   lists: Schema.array(ListKindSchema).role('select').default(['daily']).description('定时推送的榜单。多个榜打进同一条合并转发，只发图。'),
   hour: Schema.number().min(0).max(23).default(22).description('推送小时（服务器本地时区）。'),
   minute: Schema.number().min(0).max(59).default(0).description('推送分钟。'),
-  skipGif: Schema.boolean().default(false).description('跳过 GIF（后缀 .gif 或文件头 GIF8）。'),
+  skipGif: Schema.boolean().default(true).description('跳过 GIF。热榜 GIF 往往很大，容易让 OneBot 转发超时，故默认跳过。'),
   targets: Schema.array(Schema.object({
     platform: Schema.string().required().description('平台名称。'),
     selfId: Schema.string().required().description('机器人 ID。'),
@@ -114,7 +114,7 @@ export function apply(ctx: Context, config: Config) {
         await session.send(payload)
       } catch (error) {
         logger.warn(error)
-        return '发送失败了，一会儿再试。OneBot 超时可把适配器 responseTimeout 调大，或打开 skipGif。'
+        return '发送失败了，一会儿再试。OneBot 超时可把适配器 responseTimeout 调大。'
       }
     })
 
