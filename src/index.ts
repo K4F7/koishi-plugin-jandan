@@ -1,4 +1,4 @@
-import { Context, Element, Schema, h } from 'koishi'
+import { Bot, Context, Element, Schema, Session, h } from 'koishi'
 import {
   DEFAULT_MAX_IMAGE_BYTES,
   ListKind,
@@ -17,6 +17,8 @@ export const usage = `
 
 榜单：无聊图 / 随手拍 / 4小时 / 3日 / 7日
 `
+
+export const DEFAULT_WAIT_TIP = '正在解析煎蛋热榜…'
 
 const ListKindSchema = Schema.union([
   Schema.const('daily').description('每日无聊图'),
@@ -39,6 +41,7 @@ export interface Config {
   minute: number
   skipGif: boolean
   maxImageMB: number
+  waitTip: string
   targets: Target[]
 }
 
@@ -48,6 +51,7 @@ export const Config: Schema<Config> = Schema.object({
   minute: Schema.number().min(0).max(59).default(0).description('推送分钟。'),
   skipGif: Schema.boolean().default(true).description('跳过全部 GIF。热榜 GIF 常见 5–27MB；关闭后仍受单张体积上限约束，超限的丢。'),
   maxImageMB: Schema.number().min(0).max(50).default(DEFAULT_MAX_IMAGE_BYTES / 1024 / 1024).description('单张图片最大体积（MB）。超过则跳过该张，0 表示不限制。静态图一般远低于此值。'),
+  waitTip: Schema.string().default(DEFAULT_WAIT_TIP).description('下载、转码前先发这条提示，热榜发出后再尝试撤回。留空则不发。'),
   targets: Schema.array(Schema.object({
     platform: Schema.string().required().description('平台名称。'),
     selfId: Schema.string().required().description('机器人 ID。'),
@@ -64,22 +68,87 @@ function msUntil(hour: number, minute: number) {
   return next.getTime() - now.getTime()
 }
 
+export function isAdapterTimeout(error: unknown) {
+  const text = error instanceof Error ? error.message : String(error)
+  return /Timeout with request/i.test(text)
+}
+
+function shortError(error: unknown) {
+  const text = error instanceof Error ? error.message : String(error)
+  return text.split(', args:')[0]
+}
+
+function firstMessageId(result: string | string[] | void | null) {
+  if (Array.isArray(result)) return result[0]
+  return result || undefined
+}
+
+async function recall(bot: { deleteMessage(channelId: string, id: string): Promise<void> }, channelId?: string, id?: string) {
+  if (!id || !channelId) return
+  try {
+    await bot.deleteMessage(channelId, id)
+  } catch {
+    // 部分协议端不允许撤回
+  }
+}
+
 const USAGE = '用法：jandan <榜单名...> [-r]\n榜单：无聊图 / 随手拍 / 4小时 / 3日 / 7日（也可用 daily / ooxx / 4hr / 3d / 7d）'
 
 export function apply(ctx: Context, config: Config) {
   const logger = ctx.logger('jandan')
+  const waitTip = config.waitTip?.trim() ?? ''
+
+  function logSendError(error: unknown) {
+    if (isAdapterTimeout(error)) {
+      logger.warn('%s；合并转发可能仍会发出，适配器 responseTimeout 调大可去掉这条警告', shortError(error))
+      return
+    }
+    logger.warn(error)
+  }
+
+  async function sendWait(session: Session) {
+    if (!waitTip) return undefined
+    try {
+      const content = session.messageId ? `${h.quote(session.messageId)}${waitTip}` : waitTip
+      return firstMessageId(await session.send(content))
+    } catch (error) {
+      logger.warn(error)
+      return undefined
+    }
+  }
+
+  function findTargetBot(target: Target) {
+    const bot = ctx.bots.find(item => item.platform === target.platform && item.selfId === target.selfId)
+    if (!bot) logger.warn('no bot for %s:%s', target.platform, target.selfId)
+    return bot
+  }
+
+  async function notifyTargets(content: string) {
+    const sent: { bot: Bot; channelId: string; id?: string }[] = []
+    for (const target of config.targets) {
+      const bot = findTargetBot(target)
+      if (!bot) continue
+      try {
+        sent.push({
+          bot,
+          channelId: target.channelId,
+          id: firstMessageId(await bot.sendMessage(target.channelId, content, target.guildId)),
+        })
+      } catch (error) {
+        logger.warn(error)
+      }
+    }
+    return sent
+  }
 
   async function sendToTargets(content: Element) {
     for (const target of config.targets) {
-      const bot = ctx.bots.find(item => item.platform === target.platform && item.selfId === target.selfId)
-      if (!bot) {
-        logger.warn('no bot for %s:%s', target.platform, target.selfId)
-        continue
-      }
+      const bot = findTargetBot(target)
+      if (!bot) continue
       try {
         await bot.sendMessage(target.channelId, content, target.guildId)
       } catch (error) {
-        logger.warn(error)
+        logSendError(error)
       }
     }
   }
@@ -108,29 +177,44 @@ export function apply(ctx: Context, config: Config) {
       const { lists, unknown } = parseListNames(input)
       if (unknown.length) return `未知榜单：${unknown.join('、')}\n${USAGE}`
       if (!lists.length) return USAGE
+      const waitId = await sendWait(session)
       let payload: Element | null
       try {
         payload = await buildMessage(lists, !!options?.random)
       } catch (error) {
         logger.warn(error)
+        await recall(session.bot, session.channelId, waitId)
         return '拉取出错了，一会儿再试。'
       }
-      if (!payload) return '没有可发送的图片。'
+      if (!payload) {
+        await recall(session.bot, session.channelId, waitId)
+        return '没有可发送的图片。'
+      }
       try {
         await session.send(payload)
       } catch (error) {
-        logger.warn(error)
-        return '发送失败了，一会儿再试。OneBot 超时可把适配器 responseTimeout 调大。'
+        logSendError(error)
+        // OneBot 合并转发常在协议端已发出后才超时；再回一条失败提示会刷屏。
+        if (!isAdapterTimeout(error)) {
+          await recall(session.bot, session.channelId, waitId)
+          return '发送失败了，一会儿再试。OneBot 超时可把适配器 responseTimeout 调大。'
+        }
       }
+      await recall(session.bot, session.channelId, waitId)
     })
 
   const schedule = async () => {
     if (!config.targets.length || !config.lists.length) return
+    const notices = waitTip ? await notifyTargets(waitTip) : []
     try {
       const payload = await buildMessage(config.lists, false)
       if (payload) await sendToTargets(payload)
     } catch (error) {
       logger.warn(error)
+    } finally {
+      for (const notice of notices) {
+        await recall(notice.bot, notice.channelId, notice.id)
+      }
     }
   }
 

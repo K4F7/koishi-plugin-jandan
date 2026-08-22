@@ -1,5 +1,6 @@
 import assert from 'node:assert/strict'
 import { describe, it } from 'node:test'
+import { isAdapterTimeout } from '../src/index'
 import {
   composeForward,
   detectMime,
@@ -248,6 +249,18 @@ describe('encodeWebp', () => {
     const out = await encodeWebp(jpeg, 'image/jpeg')
     assert.equal(out.mime, 'image/webp')
     assert.equal(detectMime(out.data), 'image/webp')
+    assert.equal(out.data.subarray(0, 4).toString(), 'RIFF')
     assert.equal(out.data.length < jpeg.length, true)
+  })
+})
+
+describe('isAdapterTimeout', () => {
+  it('matches OneBot send_group_forward_msg timeout', () => {
+    assert.equal(
+      isAdapterTimeout(new Error('Timeout with request send_group_forward_msg, args: {"group_id":1}')),
+      true,
+    )
+    assert.equal(isAdapterTimeout(new Error('network down')), false)
+    assert.equal(isAdapterTimeout('Timeout with request send_msg'), true)
   })
 })

@@ -159,17 +159,62 @@ export async function mapLimit<T, R>(items: T[], limit: number, fn: (item: T, in
   return ret
 }
 
+interface WasmCodec {
+  init(): Promise<{
+    load?(buffer: Uint8Array): { width: number; height: number; buffer: Uint8Array }
+    decode?(buffer: Uint8Array): { width: number; height: number; framebuffer: Uint8Array }
+  }>
+}
+
+let encodeChain: Promise<unknown> = Promise.resolve()
+
+function runExclusive<T>(fn: () => Promise<T>): Promise<T> {
+  const next = encodeChain.then(fn, fn)
+  encodeChain = next.then(() => undefined, () => undefined)
+  return next
+}
+
+async function decodeRgba(data: Buffer, mime: string): Promise<{ width: number; height: number; data: Uint8ClampedArray }> {
+  const bytes = new Uint8Array(data.buffer, data.byteOffset, data.byteLength)
+  if (mime === 'image/jpeg') {
+    const jpeg = require('imagescript/wasm/node/jpeg.js') as WasmCodec
+    const frame = (await jpeg.init()).load!(bytes)
+    return {
+      width: frame.width,
+      height: frame.height,
+      data: new Uint8ClampedArray(frame.buffer.buffer, frame.buffer.byteOffset, frame.buffer.byteLength),
+    }
+  }
+  if (mime === 'image/png') {
+    const png = require('imagescript/wasm/node/png.js') as WasmCodec
+    const frame = (await png.init()).decode!(bytes)
+    return {
+      width: frame.width,
+      height: frame.height,
+      data: new Uint8ClampedArray(frame.framebuffer.buffer, frame.framebuffer.byteOffset, frame.framebuffer.byteLength),
+    }
+  }
+  throw new Error(`unsupported mime ${mime}`)
+}
+
 export async function encodeWebp(data: Buffer, mime: string): Promise<{ data: Buffer; mime: string }> {
   if (mime === 'image/gif' || mime === 'image/webp') return { data, mime }
-  try {
-    const { Image } = await import('imagescript')
-    const image = await Image.decode(data)
-    const out = Buffer.from(await image.encodeWEBP(WEBP_QUALITY))
-    if (out.length >= data.length) return { data, mime }
-    return { data: out, mime: 'image/webp' }
-  } catch {
-    return { data, mime }
-  }
+  return runExclusive(async () => {
+    try {
+      const image = await decodeRgba(data, mime)
+      const webp = require('webp-wasm') as {
+        encode(
+          frame: { data: Uint8ClampedArray; width: number; height: number },
+          opts?: { quality?: number; low_memory?: number },
+        ): Promise<Buffer>
+      }
+      const out = await webp.encode(image, { quality: WEBP_QUALITY, low_memory: 1 })
+      if (!out?.length || out.length >= data.length) return { data, mime }
+      return { data: Buffer.from(out), mime: 'image/webp' }
+    } catch {
+      return { data, mime }
+    }
+  })
 }
 
 export async function downloadImage(http: HTTP, url: string, options: PrepareOptions = {}): Promise<PreparedImage | null> {
