@@ -6,17 +6,17 @@
 [![Koishi](https://img.shields.io/badge/Koishi-4-026d4d?style=flat-square)](https://koishi.chat/)
 [![PRs Welcome](https://img.shields.io/badge/PRs-welcome-brightgreen.svg?style=flat-square)](https://github.com/K4F7/koishi-plugin-jandan/pulls)
 
-每天定时推送 [煎蛋](https://jandan.net/) 热榜无聊图 / 随手拍。手动指令按榜单名拉取；单榜合并转发，多榜再包一层嵌套转发。
+每天定时推送 [煎蛋](https://jandan.net/) 热榜无聊图 / 随手拍。手动指令按榜单名拉取；整次请求打成**一条**合并转发。
 
-Push Jandan hot boring pictures and ooxx on a schedule. Manual commands fetch by list name; one list is a single forward, multiple lists nest inside another.
+Push Jandan hot boring pictures and ooxx on a schedule. Manual commands fetch by list name; each request is a single merge-forward.
 
 ## Features
 
 - ⏰ **定时推送**：按服务器本地时区，每天在设定时刻向指定会话发送热榜
 - 📋 **多榜单**：无聊图、4 小时、3 日、7 日、随手拍，可多选
-- 🔁 **合并转发**：单榜一条 forward；多榜再包一层嵌套转发，一次发出
+- 🔁 **合并转发**：一次请求只发一条 forward；第一条是榜名，后面只发图
 - 🎲 **随机单张**：指令加 `-r` 从所选榜里随机发一张，不走合并转发
-- 🖼️ **原图下载**：从帖子 `content` 的 `<img src>` 解析图片，`/mw600/`、`/mw1024/` 升为 `/large/`
+- 🖼️ **原图 URL**：从帖子 `content` 的 `<img src>` 解析图片，`/mw600/`、`/mw1024/` 升为 `/large/`，把 URL 交给适配器（不把图转成 base64，避免 OneBot 超时）
 - 🚫 **跳过 GIF**：可选按 URL 后缀 `.gif` 或文件头 `GIF8` 过滤
 - 🌐 **中英别名**：`无聊图` / `daily` / `pic` 等写法均可
 
@@ -96,19 +96,19 @@ jandan ooxx 4hr
 | `pic7days` / `7d` / `7日` | 7 日无聊图 |
 | `ooxx` / `随手拍` | 随手拍热榜 |
 
-- 一个榜：该榜全量打成一条合并转发
-- 多个榜：每个榜一条 inner forward，外层再包一层后一次发出
+- 一个榜：整榜一条合并转发，第一条是榜名，后面只发图
+- 多个榜：仍是一条合并转发，第一条标题把榜名拼在一起，后面只发图
 - `-r` / `--random`：从本次选出的榜里随机一张，普通消息发出（不走合并转发）
 
 定时推送只用配置里的 `lists` + `targets`，与指令无关。
 
-### 多榜嵌套转发
+### 合并转发
 
-- 每个榜先打成一条 inner forward（每个帖子一个节点，节点作者用原帖 `author`，节点内只放图）
-- 只选一个榜：直接发出这条 forward
-- 选了多个榜：外层再包一条 `forward`，把各榜的 inner forward nested 进去，仍然只 `send` 一次
+- 群里只出现一张「聊天记录」卡片
+- 第一条节点保留：`煎蛋热榜` + 榜名
+- 后面每张图一个节点，只放图，不带作者、评论或其它文字
 
-不支持嵌套转发的平台由适配器回退，插件本身仍只构造 `forward`。
+图片发给适配器的是 URL，不是 base64。OneBot 默认大约 60 秒超时，整榜原图编成 base64 很容易超时。
 
 ### skipGif
 
@@ -117,11 +117,11 @@ jandan ooxx 4hr
 - URL 路径后缀 `.gif`
 - 下载后文件头为 `GIF8`
 
-图从每条 `content` 的 `<img src>` 解析（接口里的 `images` 经常是空的）。请求带 `Referer: https://jandan.net/top`。
+图从每条 `content` 的 `<img src>` 解析（接口里的 `images` 经常是空的）。默认只把 URL 交给适配器去拉；`skipGif` 打开时才会下载以识别文件头 `GIF8`。请求带 `Referer: https://jandan.net/top`。
 
 ## Configuration
 
-控制台只保留这些项。不加 `limit`、`delayMs`、`includeMeta`。每次拉当前榜全部条目，一次发出。
+每次拉当前榜全部条目，打成一条合并转发发出。
 
 | 项 | 类型 | 默认 | 说明 |
 | --- | --- | --- | --- |
@@ -154,11 +154,11 @@ jandan ooxx 4hr
 
 ### `buildPayload(http, kinds, skipGif)`
 
-按顺序拉榜、下图、过滤空榜，返回 `{ label, posts }[]`。
+按顺序拉榜、解析图片 URL、过滤空榜，返回 `{ label, posts }[]`。
 
 ### `composeForward(prepared)`
 
-一个榜返回该榜的 forward；多个榜再包一层嵌套 forward。
+始终返回一条 `forward`。第一条是榜名，后面每张图一个节点。
 
 ### `pickRandomImage(lists)`
 
@@ -174,7 +174,7 @@ tests/
 └── jandan.spec.ts
 ```
 
-数据流：煎蛋 top API → 解析 `<img src>` → 升大图 URL → 下载（可选跳过 GIF）→ 按作者组节点 → `h('message', { forward: true })`。
+数据流：煎蛋 top API → 解析 `<img src>` → 升大图 URL →（`skipGif` 时才下载验 GIF）→ 标题节点 + 每图一个节点 → 一条 `h('message', { forward: true })`。
 
 ## 工作区开发
 
@@ -226,9 +226,9 @@ npm run build
 </details>
 
 <details>
-<summary><strong>为什么有的平台看不到嵌套转发？</strong></summary>
+<summary><strong>发送失败 / <code>Timeout with request send_group_forward_msg</code>？</strong></summary>
 
-插件只构造 Koishi 的 `forward` 元素。不支持嵌套转发的平台由适配器回退，不是插件另发多条消息。
+热榜图多、GIF 很大时，OneBot 拉图上传可能超过默认约 60 秒。在适配器里把 `responseTimeout` 加大，或打开 `skipGif`。插件发的是图片 URL，不要再让适配器把图转成 base64。
 </details>
 
 <details>
@@ -245,7 +245,11 @@ npm run build
 
 **拉取出错了，一会儿再试**
 
-煎蛋 API 或图床请求失败。看 Koishi 日志里的 `jandan` logger。请求带 `Referer: https://jandan.net/top`。
+煎蛋 API 请求失败。看 Koishi 日志里的 `jandan` logger。
+
+**发送失败了，一会儿再试**
+
+合并转发被 OneBot 超时。加大适配器 `responseTimeout`，或打开 `skipGif` 跳过超大 GIF。
 
 **no bot for platform:selfId**
 
@@ -293,7 +297,7 @@ Actions 会 `npm ci` → `npm test` → `npm run build` → `npm publish --acces
 
 ## Changelog
 
-当前版本 **1.0.0**：定时推送煎蛋热榜、手动指令、合并 / 嵌套转发、随机单张、可选跳过 GIF。
+当前版本 **1.1.0**：整次请求一条合并转发；图片改为 URL 而不是 base64，避免 OneBot `send_group_forward_msg` 超时。多榜平铺在同一条里，不嵌套。
 
 ## License
 

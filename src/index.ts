@@ -41,7 +41,7 @@ export interface Config {
 }
 
 export const Config: Schema<Config> = Schema.object({
-  lists: Schema.array(ListKindSchema).role('select').default(['daily']).description('定时推送的榜单，多选时嵌套合并转发。'),
+  lists: Schema.array(ListKindSchema).role('select').default(['daily']).description('定时推送的榜单。多个榜打进同一条合并转发，只发图。'),
   hour: Schema.number().min(0).max(23).default(22).description('推送小时（服务器本地时区）。'),
   minute: Schema.number().min(0).max(59).default(0).description('推送分钟。'),
   skipGif: Schema.boolean().default(false).description('跳过 GIF（后缀 .gif 或文件头 GIF8）。'),
@@ -87,7 +87,7 @@ export function apply(ctx: Context, config: Config) {
     if (random) {
       const image = pickRandomImage(prepared.map(item => item.posts))
       if (!image) return null
-      return h.image(image.data, image.mime)
+      return h.image(image.url)
     }
     return composeForward(prepared)
   }
@@ -102,13 +102,19 @@ export function apply(ctx: Context, config: Config) {
       const { lists, unknown } = parseListNames(input)
       if (unknown.length) return `未知榜单：${unknown.join('、')}\n${USAGE}`
       if (!lists.length) return USAGE
+      let payload: Element | null
       try {
-        const payload = await buildMessage(lists, !!options?.random)
-        if (!payload) return '没有可发送的图片。'
-        await session.send(payload)
+        payload = await buildMessage(lists, !!options?.random)
       } catch (error) {
         logger.warn(error)
         return '拉取出错了，一会儿再试。'
+      }
+      if (!payload) return '没有可发送的图片。'
+      try {
+        await session.send(payload)
+      } catch (error) {
+        logger.warn(error)
+        return '发送失败了，一会儿再试。OneBot 超时可把适配器 responseTimeout 调大，或打开 skipGif。'
       }
     })
 
