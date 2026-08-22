@@ -3,20 +3,29 @@ import { describe, it } from 'node:test'
 import {
   composeForward,
   detectMime,
+  encodeWebp,
   extractImageUrls,
   isGifBuffer,
   isGifUrl,
+  mapLimit,
   packListForward,
   parseListNames,
+  preparePosts,
   rewriteImageUrl,
+  type JandanPost,
   type PreparedPost,
 } from '../src/jandan'
+
+const JPEG = Buffer.from([0xff, 0xd8, 0xff, 0xe0])
+const GIF = Buffer.from([0x47, 0x49, 0x46, 0x38, 0x39, 0x61])
 
 function fakePosts(count: number, imagesPerPost = 1): PreparedPost[] {
   return Array.from({ length: count }, (_, i) => ({
     author: `u${i}`,
     images: Array.from({ length: imagesPerPost }, (_, j) => ({
       url: `https://img.example.com/${i}-${j}.jpg`,
+      data: JPEG,
+      mime: 'image/jpeg',
     })),
   }))
 }
@@ -99,8 +108,9 @@ describe('packListForward', () => {
       assert.equal(node.children.every(child => child.type === 'img'), true)
       assert.equal(node.children.some(child => child.type === 'author' || child.type === 'text'), false)
     }
-    assert.equal(rest[0].children[0].attrs.src, 'https://img.example.com/0-0.jpg')
-    assert.equal(String(rest[0].children[0].attrs.src).includes('base64'), false)
+    const src = String(rest[0].children[0].attrs.src)
+    assert.equal(src.startsWith('data:image/jpeg;base64,'), true)
+    assert.equal(src.includes('img.example.com'), false)
   })
 })
 
@@ -124,5 +134,120 @@ describe('composeForward', () => {
     assert.deepEqual(labels, ['无聊图 随手拍'])
     assert.equal(packed.children.length, 4)
     assert.equal(packed.children.slice(1).every(node => node.children.every(child => child.type === 'img')), true)
+  })
+
+  it('keeps 21 images in a single forward', () => {
+    const packed = composeForward([{ label: '4小时', posts: fakePosts(21) }])
+    assert.equal(packed.attrs.forward, true)
+    assert.equal(packed.children.some(child => child.attrs.forward), false)
+    assert.equal(packed.children.length, 22)
+  })
+})
+
+describe('mapLimit', () => {
+  it('preserves order and caps concurrency', async () => {
+    let running = 0
+    let max = 0
+    const result = await mapLimit([1, 2, 3, 4, 5], 2, async (value) => {
+      running++
+      max = Math.max(max, running)
+      await new Promise(resolve => setTimeout(resolve, 20))
+      running--
+      return value * 2
+    })
+    assert.deepEqual(result, [2, 4, 6, 8, 10])
+    assert.equal(max, 2)
+  })
+})
+
+describe('preparePosts', () => {
+  it('skips gif urls, downloads stills concurrently, and drops gif magic', async () => {
+    const calls: string[] = []
+    const http = {
+      get: async (url: string) => {
+        calls.push(url)
+        if (url.includes('disguised')) return GIF.buffer.slice(GIF.byteOffset, GIF.byteOffset + GIF.byteLength)
+        if (url.includes('fail')) throw new Error('boom')
+        return JPEG.buffer.slice(JPEG.byteOffset, JPEG.byteOffset + JPEG.byteLength)
+      },
+    }
+    const posts: JandanPost[] = [
+      { id: 1, author: 'a', content: '<img src="https://img.toto.im/large/a.jpg" /><img src="https://img.toto.im/large/b.gif" />' },
+      { id: 2, author: 'b', content: '<img src="https://img.toto.im/large/disguised" />' },
+      { id: 3, author: 'c', content: '<img src="https://img.toto.im/large/fail.jpg" />' },
+    ]
+    const prepared = await preparePosts(http as never, posts, { skipGif: true, concurrency: 2 })
+    assert.deepEqual(calls.sort(), [
+      'https://img.toto.im/large/a.jpg',
+      'https://img.toto.im/large/disguised',
+      'https://img.toto.im/large/fail.jpg',
+    ])
+    assert.equal(prepared.length, 1)
+    assert.equal(prepared[0].author, 'a')
+    assert.equal(prepared[0].images.length, 1)
+    assert.equal(prepared[0].images[0].url, 'https://img.toto.im/large/a.jpg')
+    assert.equal(prepared[0].images[0].mime, 'image/jpeg')
+    assert.equal(prepared[0].images[0].data.equals(JPEG), true)
+  })
+
+  it('keeps small gifs when skipGif is off and drops images over maxBytes', async () => {
+    function bytesOf(kind: 'jpeg' | 'gif', size: number) {
+      const buf = Buffer.alloc(size, 0)
+      if (kind === 'gif') {
+        buf[0] = 0x47
+        buf[1] = 0x49
+        buf[2] = 0x46
+        buf[3] = 0x38
+      } else {
+        buf[0] = 0xff
+        buf[1] = 0xd8
+        buf[2] = 0xff
+      }
+      return buf.buffer.slice(buf.byteOffset, buf.byteOffset + buf.byteLength)
+    }
+    const http = {
+      get: async (url: string) => {
+        if (url.includes('small.gif')) return bytesOf('gif', 64)
+        if (url.includes('huge.gif')) return bytesOf('gif', 256)
+        if (url.includes('huge.jpg')) return bytesOf('jpeg', 256)
+        return bytesOf('jpeg', 32)
+      },
+    }
+    const posts: JandanPost[] = [{
+      id: 1,
+      author: 'a',
+      content: [
+        '<img src="https://img.toto.im/large/ok.jpg" />',
+        '<img src="https://img.toto.im/large/small.gif" />',
+        '<img src="https://img.toto.im/large/huge.gif" />',
+        '<img src="https://img.toto.im/large/huge.jpg" />',
+      ].join(''),
+    }]
+    const prepared = await preparePosts(http as never, posts, { skipGif: false, maxBytes: 128 })
+    assert.equal(prepared.length, 1)
+    assert.deepEqual(prepared[0].images.map(image => image.url), [
+      'https://img.toto.im/large/ok.jpg',
+      'https://img.toto.im/large/small.gif',
+    ])
+    assert.equal(prepared[0].images[1].mime, 'image/gif')
+  })
+})
+
+describe('encodeWebp', () => {
+  it('leaves gifs untouched', async () => {
+    const out = await encodeWebp(GIF, 'image/gif')
+    assert.equal(out.mime, 'image/gif')
+    assert.equal(out.data.equals(GIF), true)
+  })
+
+  it('encodes a still jpeg to webp when that is smaller', async () => {
+    const { Image } = await import('imagescript')
+    const image = new Image(240, 240)
+    image.fill(0x4488ccff)
+    const jpeg = Buffer.from(await image.encodeJPEG(95))
+    const out = await encodeWebp(jpeg, 'image/jpeg')
+    assert.equal(out.mime, 'image/webp')
+    assert.equal(detectMime(out.data), 'image/webp')
+    assert.equal(out.data.length < jpeg.length, true)
   })
 })

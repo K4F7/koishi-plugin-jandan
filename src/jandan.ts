@@ -45,6 +45,8 @@ export interface JandanPost {
 
 export interface PreparedImage {
   url: string
+  data: Buffer
+  mime: string
 }
 
 export interface PreparedPost {
@@ -134,39 +136,99 @@ export async function fetchList(http: HTTP, kind: ListKind): Promise<JandanPost[
   return body.data ?? []
 }
 
-export async function downloadImage(http: HTTP, url: string, skipGif: boolean): Promise<Buffer | null> {
+export const DOWNLOAD_CONCURRENCY = 4
+export const DEFAULT_MAX_IMAGE_BYTES = 8 * 1024 * 1024
+export const WEBP_QUALITY = 80 as const
+
+export interface PrepareOptions {
+  skipGif?: boolean
+  concurrency?: number
+  maxBytes?: number
+}
+
+export async function mapLimit<T, R>(items: T[], limit: number, fn: (item: T, index: number) => Promise<R>): Promise<R[]> {
+  const ret: R[] = new Array(items.length)
+  let next = 0
+  const workers = Math.min(Math.max(1, limit), items.length)
+  await Promise.all(Array.from({ length: workers }, async () => {
+    while (next < items.length) {
+      const index = next++
+      ret[index] = await fn(items[index], index)
+    }
+  }))
+  return ret
+}
+
+export async function encodeWebp(data: Buffer, mime: string): Promise<{ data: Buffer; mime: string }> {
+  if (mime === 'image/gif' || mime === 'image/webp') return { data, mime }
+  try {
+    const { Image } = await import('imagescript')
+    const image = await Image.decode(data)
+    const out = Buffer.from(await image.encodeWEBP(WEBP_QUALITY))
+    if (out.length >= data.length) return { data, mime }
+    return { data: out, mime: 'image/webp' }
+  } catch {
+    return { data, mime }
+  }
+}
+
+export async function downloadImage(http: HTTP, url: string, options: PrepareOptions = {}): Promise<PreparedImage | null> {
+  const skipGif = options.skipGif ?? true
+  const maxBytes = options.maxBytes ?? DEFAULT_MAX_IMAGE_BYTES
   if (skipGif && isGifUrl(url)) return null
   const data = Buffer.from(await http.get<ArrayBuffer>(url, {
     headers: httpHeaders,
     responseType: 'arraybuffer',
   }))
   if (skipGif && isGifBuffer(data)) return null
-  return data
+  const encoded = await encodeWebp(data, detectMime(data))
+  if (maxBytes > 0 && encoded.data.length > maxBytes) return null
+  return { url, ...encoded }
 }
 
-export async function preparePosts(http: HTTP, posts: JandanPost[], skipGif: boolean): Promise<PreparedPost[]> {
-  const prepared: PreparedPost[] = []
-  for (const post of posts) {
-    const images: PreparedImage[] = []
-    for (const url of extractImageUrls(post.content ?? '')) {
+export async function preparePosts(
+  http: HTTP,
+  posts: JandanPost[],
+  options: PrepareOptions = {},
+): Promise<PreparedPost[]> {
+  const skipGif = options.skipGif ?? true
+  const concurrency = options.concurrency ?? DOWNLOAD_CONCURRENCY
+  const tasks: { postIndex: number; url: string }[] = []
+  for (let i = 0; i < posts.length; i++) {
+    for (const url of extractImageUrls(posts[i].content ?? '')) {
       if (skipGif && isGifUrl(url)) continue
-      if (skipGif) {
-        try {
-          const data = await downloadImage(http, url, true)
-          if (!data) continue
-        } catch {
-          continue
-        }
-      }
-      images.push({ url })
+      tasks.push({ postIndex: i, url })
     }
-    if (images.length) prepared.push({ author: post.author || '匿名', images })
+  }
+
+  const results = await mapLimit(tasks, concurrency, async (task) => {
+    try {
+      return await downloadImage(http, task.url, options)
+    } catch {
+      return null
+    }
+  })
+
+  const byPost = new Map<number, PreparedImage[]>()
+  for (let i = 0; i < results.length; i++) {
+    const image = results[i]
+    if (!image) continue
+    const { postIndex } = tasks[i]
+    const images = byPost.get(postIndex) ?? []
+    images.push(image)
+    byPost.set(postIndex, images)
+  }
+
+  const prepared: PreparedPost[] = []
+  for (let i = 0; i < posts.length; i++) {
+    const images = byPost.get(i)
+    if (images?.length) prepared.push({ author: posts[i].author || '匿名', images })
   }
   return prepared
 }
 
 export function packImageNodes(posts: PreparedPost[]) {
-  return posts.flatMap(post => post.images.map(image => h('message', [h.image(image.url)])))
+  return posts.flatMap(post => post.images.map(image => h('message', [h.image(image.data, image.mime)])))
 }
 
 export function packListForward(label: string, posts: PreparedPost[]) {
@@ -188,10 +250,10 @@ export function pickRandomImage(lists: PreparedPost[][]): PreparedImage | null {
   return images[Math.floor(Math.random() * images.length)]
 }
 
-export async function buildPayload(http: HTTP, kinds: ListKind[], skipGif: boolean) {
+export async function buildPayload(http: HTTP, kinds: ListKind[], options: PrepareOptions = {}) {
   const prepared: PreparedList[] = []
   for (const kind of kinds) {
-    const posts = await preparePosts(http, await fetchList(http, kind), skipGif)
+    const posts = await preparePosts(http, await fetchList(http, kind), options)
     if (posts.length) prepared.push({ label: LIST_LABELS[kind], posts })
   }
   return prepared

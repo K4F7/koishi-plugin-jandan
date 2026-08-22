@@ -1,5 +1,6 @@
 import { Context, Element, Schema, h } from 'koishi'
 import {
+  DEFAULT_MAX_IMAGE_BYTES,
   ListKind,
   buildPayload,
   composeForward,
@@ -37,6 +38,7 @@ export interface Config {
   hour: number
   minute: number
   skipGif: boolean
+  maxImageMB: number
   targets: Target[]
 }
 
@@ -44,7 +46,8 @@ export const Config: Schema<Config> = Schema.object({
   lists: Schema.array(ListKindSchema).role('select').default(['daily']).description('定时推送的榜单。多个榜打进同一条合并转发，只发图。'),
   hour: Schema.number().min(0).max(23).default(22).description('推送小时（服务器本地时区）。'),
   minute: Schema.number().min(0).max(59).default(0).description('推送分钟。'),
-  skipGif: Schema.boolean().default(true).description('跳过 GIF。热榜 GIF 往往很大，容易让 OneBot 转发超时，故默认跳过。'),
+  skipGif: Schema.boolean().default(true).description('跳过全部 GIF。热榜 GIF 常见 5–27MB；关闭后仍受单张体积上限约束，超限的丢。'),
+  maxImageMB: Schema.number().min(0).max(50).default(DEFAULT_MAX_IMAGE_BYTES / 1024 / 1024).description('单张图片最大体积（MB）。超过则跳过该张，0 表示不限制。静态图一般远低于此值。'),
   targets: Schema.array(Schema.object({
     platform: Schema.string().required().description('平台名称。'),
     selfId: Schema.string().required().description('机器人 ID。'),
@@ -82,12 +85,15 @@ export function apply(ctx: Context, config: Config) {
   }
 
   async function buildMessage(kinds: ListKind[], random: boolean) {
-    const prepared = await buildPayload(ctx.http, kinds, config.skipGif)
+    const prepared = await buildPayload(ctx.http, kinds, {
+      skipGif: config.skipGif,
+      maxBytes: config.maxImageMB > 0 ? Math.floor(config.maxImageMB * 1024 * 1024) : 0,
+    })
     if (!prepared.length) return null
     if (random) {
       const image = pickRandomImage(prepared.map(item => item.posts))
       if (!image) return null
-      return h.image(image.url)
+      return h.image(image.data, image.mime)
     }
     return composeForward(prepared)
   }

@@ -16,8 +16,8 @@ Push Jandan hot boring pictures and ooxx on a schedule. Manual commands fetch by
 - 📋 **多榜单**：无聊图、4 小时、3 日、7 日、随手拍，可多选
 - 🔁 **合并转发**：一次请求只发一条 forward；第一条是榜名，后面只发图
 - 🎲 **随机单张**：指令加 `-r` 从所选榜里随机发一张，不走合并转发
-- 🖼️ **原图 URL**：从帖子 `content` 的 `<img src>` 解析图片，`/mw600/`、`/mw1024/` 升为 `/large/`，把 URL 交给适配器（不把图转成 base64）
-- 🚫 **跳过 GIF**：默认开启。热榜 GIF 往往很大，容易让转发超时；按 URL 后缀 `.gif` 或文件头 `GIF8` 过滤
+- 🖼️ **插件下载后转 WebP 再发**：从帖子 `content` 的 `<img src>` 解析图片，`/mw600/`、`/mw1024/` 升为 `/large/`，带 Referer 并发下载，静态图用 ImageScript（无 sharp）转成 WebP 后再交给适配器
+- 🚫 **跳过 GIF**：默认开启。热榜 GIF 常见 5–27MB；关闭后仍按单张上限（默认 8MB）丢超限的图
 - 🌐 **中英别名**：`无聊图` / `daily` / `pic` 等写法均可
 
 ## Quick Start
@@ -35,7 +35,7 @@ jandan 4小时 -r
 
 ## Changelog
 
-当前版本 **1.1.1**：一条合并转发；图片改为 URL 而不是 base64；第一条榜名，后面只发图。`skipGif` 默认开启（热榜 GIF 往往很大）。
+当前版本 **1.2.0**：仍是一条合并转发。图片由插件并发下载、转成 WebP 后再发给适配器。默认跳过 GIF；单张上限 8MB（按转码后体积，超限丢掉）。
 
 ## License
 
