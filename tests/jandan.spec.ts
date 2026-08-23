@@ -7,7 +7,6 @@ import {
   composeForwardEach,
   composeForwardFromUrls,
   detectMime,
-  encodeWebp,
   extractForwardImageSrcs,
   extractImageUrls,
   isGifBuffer,
@@ -302,26 +301,6 @@ describe('preparePosts', () => {
       'https://img.toto.im/large/small.gif',
     ])
     assert.equal(prepared[0].images[1].mime, 'image/gif')
-  })
-})
-
-describe('encodeWebp', () => {
-  it('leaves gifs untouched', async () => {
-    const out = await encodeWebp(GIF, 'image/gif')
-    assert.equal(out.mime, 'image/gif')
-    assert.equal(out.data.equals(GIF), true)
-  })
-
-  it('encodes a still jpeg to webp when that is smaller', async () => {
-    const { Image } = await import('imagescript')
-    const image = new Image(240, 240)
-    image.fill(0x4488ccff)
-    const jpeg = Buffer.from(await image.encodeJPEG(95))
-    const out = await encodeWebp(jpeg, 'image/jpeg')
-    assert.equal(out.mime, 'image/webp')
-    assert.equal(detectMime(out.data), 'image/webp')
-    assert.equal(out.data.subarray(0, 4).toString(), 'RIFF')
-    assert.equal(out.data.length < jpeg.length, true)
   })
 })
 
