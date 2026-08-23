@@ -98,11 +98,6 @@ export async function withResponseTimeout<T>(
   }
 }
 
-function shortError(error: unknown) {
-  const text = error instanceof Error ? error.message : String(error)
-  return text.split(', args:')[0]
-}
-
 function firstMessageId(result: string | string[] | void | null) {
   if (Array.isArray(result)) return result[0]
   return result || undefined
@@ -124,10 +119,7 @@ export function apply(ctx: Context, config: Config) {
   const waitTip = config.waitTip?.trim() ?? ''
 
   function logSendError(error: unknown) {
-    if (isAdapterTimeout(error)) {
-      logger.warn('%s；合并转发可能仍会发出，适配器 responseTimeout 调大可去掉这条警告', shortError(error))
-      return
-    }
+    if (isAdapterTimeout(error)) return
     logger.warn(error)
   }
 
