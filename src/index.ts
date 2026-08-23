@@ -1,4 +1,4 @@
-import { Bot, Context, Element, Schema, Session, h } from 'koishi'
+import { Bot, Context, Schema, Session, h } from 'koishi'
 import {
   DEFAULT_MAX_IMAGE_BYTES,
   ListKind,
@@ -7,6 +7,7 @@ import {
   composeForwardEach,
   parseListNames,
   pickRandomImage,
+  pickRandomPost,
 } from './jandan'
 
 export const name = 'jandan'
@@ -14,7 +15,7 @@ export const name = 'jandan'
 export const inject = ['http']
 
 export const usage = `
-定时推送煎蛋热榜。手动指令：\`jandan <榜单名...>\`，加 \`-r\` 随机单张。
+推送煎蛋梗图，快乐摸鱼。手动指令：\`jandan <榜单名...>\`，加 \`-r\` 随机单张。\`摸鱼\` 从无聊图热榜随机发一帖。
 
 榜单：无聊图 / 随手拍 / 4小时 / 3日 / 7日
 `
@@ -154,31 +155,18 @@ export function apply(ctx: Context, config: Config) {
 
   async function sendPayload(bot: Bot, send: () => Promise<unknown>) {
     try {
-      const result = await withResponseTimeout(bot, config.sendTimeout, send)
-      return { id: firstMessageId(result as string | string[] | void | null) }
+      await withResponseTimeout(bot, config.sendTimeout, send)
     } catch (error) {
       logSendError(error)
-      return { error }
+      return error
     }
-  }
-
-  async function sendHotlist(
-    bot: Bot,
-    prepared: PreparedList[],
-    send: (payload: Element) => Promise<unknown>,
-  ) {
-    return sendPayload(bot, () => send(composeForwardEach(prepared))).then(result => result.error)
   }
 
   async function sendToTargets(prepared: PreparedList[]) {
     for (const target of config.targets) {
       const bot = findTargetBot(target)
       if (!bot) continue
-      await sendHotlist(
-        bot,
-        prepared,
-        payload => bot.sendMessage(target.channelId, payload, target.guildId),
-      )
+      await sendPayload(bot, () => bot.sendMessage(target.channelId, composeForwardEach(prepared), target.guildId))
     }
   }
 
@@ -218,7 +206,7 @@ export function apply(ctx: Context, config: Config) {
           await recall(session.bot, session.channelId, waitId)
           return '没有可发送的图片。'
         }
-        const error = (await sendPayload(session.bot, () => session.send(h.image(image.data, image.mime)))).error
+        const error = await sendPayload(session.bot, () => session.send(h.image(image.data, image.mime)))
         if (error && !isAdapterTimeout(error)) {
           await recall(session.bot, session.channelId, waitId)
           return '发送失败了，一会儿再试。OneBot 超时可把适配器 responseTimeout 调大。'
@@ -226,7 +214,37 @@ export function apply(ctx: Context, config: Config) {
         return
       }
       if (!session.channelId) return '发送失败了，一会儿再试。'
-      const error = await sendHotlist(session.bot, prepared, payload => session.send(payload))
+      const error = await sendPayload(session.bot, () => session.send(composeForwardEach(prepared)))
+      if (error && !isAdapterTimeout(error)) {
+        await recall(session.bot, session.channelId, waitId)
+        return '发送失败了，一会儿再试。OneBot 超时可把适配器 responseTimeout 调大。'
+      }
+    })
+
+  ctx.command('摸鱼', '从无聊图热榜随机发一帖')
+    .alias('moyu')
+    .shortcut('摸鱼')
+    .action(async ({ session }) => {
+      if (!session) return
+      const waitId = await sendWait(session)
+      let prepared: PreparedList[]
+      try {
+        prepared = await loadPrepared(['daily'])
+      } catch (error) {
+        logger.warn(error)
+        await recall(session.bot, session.channelId, waitId)
+        return '拉取出错了，一会儿再试。'
+      }
+      if (!prepared.length) {
+        await recall(session.bot, session.channelId, waitId)
+        return '没有可发送的图片。'
+      }
+      const post = pickRandomPost(prepared.flatMap(item => item.posts))
+      if (!post) {
+        await recall(session.bot, session.channelId, waitId)
+        return '没有可发送的图片。'
+      }
+      const error = await sendPayload(session.bot, () => session.send(post.images.map(img => h.image(img.data, img.mime))))
       if (error && !isAdapterTimeout(error)) {
         await recall(session.bot, session.channelId, waitId)
         return '发送失败了，一会儿再试。OneBot 超时可把适配器 responseTimeout 调大。'

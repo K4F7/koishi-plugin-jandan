@@ -137,7 +137,7 @@ export async function fetchList(http: HTTP, kind: ListKind): Promise<JandanPost[
 }
 
 export const DOWNLOAD_CONCURRENCY = 4
-export const DEFAULT_MAX_IMAGE_BYTES = 8 * 1024 * 1024
+export const DEFAULT_MAX_IMAGE_BYTES = 10 * 1024 * 1024
 
 export interface PrepareOptions {
   skipGif?: boolean
@@ -228,7 +228,7 @@ export function packImageNodes(posts: PreparedPost[]) {
   return nodes
 }
 
-export function packImageNodesEach(posts: PreparedPost[]) {
+export function packPostImageNodes(posts: PreparedPost[]) {
   return posts
     .filter(post => post.images.length)
     .map(post => h('message', post.images.map(image => h.image(image.data, image.mime))))
@@ -246,7 +246,7 @@ export function composeForwardEach(prepared: PreparedList[]) {
   const posts = prepared.flatMap(item => item.posts)
   return h('message', { forward: true }, [
     h('message', [h('author', { name: '煎蛋热榜' }), label]),
-    ...packImageNodesEach(posts),
+    ...packPostImageNodes(posts),
   ])
 }
 
@@ -298,6 +298,12 @@ export function pickRandomImage(lists: PreparedPost[][]): PreparedImage | null {
   const images = lists.flatMap(posts => posts.flatMap(post => post.images))
   if (!images.length) return null
   return images[Math.floor(Math.random() * images.length)]
+}
+
+export function pickRandomPost(posts: PreparedPost[]): PreparedPost | null {
+  const candidates = posts.filter(post => post.images.length)
+  if (!candidates.length) return null
+  return candidates[Math.floor(Math.random() * candidates.length)]
 }
 
 export async function buildPayload(http: HTTP, kinds: ListKind[], options: PrepareOptions = {}) {

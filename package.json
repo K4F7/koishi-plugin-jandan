@@ -1,7 +1,7 @@
 {
   "name": "koishi-plugin-jandan",
-  "description": "每天定时推送煎蛋热榜无聊图",
-  "version": "1.2.7",
+  "description": "推送煎蛋梗图，快乐摸鱼",
+  "version": "1.2.8",
   "main": "lib/index.js",
   "typings": "lib/index.d.ts",
   "files": [
@@ -43,8 +43,8 @@
   },
   "koishi": {
     "description": {
-      "zh": "每天定时推送煎蛋热榜无聊图 / 随手拍",
-      "en": "Push Jandan hot boring pictures and ooxx on a schedule"
+      "zh": "推送煎蛋梗图，快乐摸鱼",
+      "en": "Push Jandan memes and slack off happily"
     },
     "service": {
       "required": [

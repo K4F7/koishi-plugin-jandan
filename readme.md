@@ -6,9 +6,9 @@
 [![Koishi](https://img.shields.io/badge/Koishi-4-026d4d?style=flat-square)](https://koishi.chat/)
 [![PRs Welcome](https://img.shields.io/badge/PRs-welcome-brightgreen.svg?style=flat-square)](https://github.com/K4F7/koishi-plugin-jandan/pulls)
 
-每天定时推送 [煎蛋](https://jandan.net/) 热榜无聊图 / 随手拍。手动指令按榜单名拉取；整次请求打成一条合并转发（第一条是榜名，后面只发图）。
+推送煎蛋梗图，快乐摸鱼。手动指令按榜单名拉取；整次请求打成一条合并转发（第一条是榜名，后面只发图）。
 
-Push Jandan hot boring pictures and ooxx on a schedule. Manual commands fetch by list name; each request is a single merge-forward.
+Push Jandan memes and slack off happily. Manual commands fetch by list name; each request is a single merge-forward.
 
 ## Features
 
@@ -16,10 +16,11 @@ Push Jandan hot boring pictures and ooxx on a schedule. Manual commands fetch by
 - 📋 **多榜单**：无聊图、4 小时、3 日、7 日、随手拍，可多选
 - 🔁 **合并转发**：一次请求只发一条 forward；第一条是榜名，后面只发图
 - 🎲 **随机单张**：指令加 `-r` 从所选榜里随机发一张，不走合并转发
+- 🐟 **摸鱼**：`摸鱼` / `moyu` 从无聊图热榜随机发一帖的全部图片
 - 🖼️ **下载原图再发**：从帖子 `content` 的 `<img src>` 解析图片，`/mw600/`、`/mw1024/` 升为 `/large/`，带 Referer 并发下载后原样交给适配器
 - 🚀 **正式转发**：直接发一条「标题 + 一帖一节点」的合并转发；同一帖多图打进同一个气泡
 - ⏳ **先发「正在解析」**：下载完成后再发合并转发，提示默认不撤回。发送时把 OneBot `responseTimeout` 临时调到 10 分钟，避免协议端还在传图时适配器 60 秒误报超时
-- 🚫 **跳过 GIF**：默认开启。热榜 GIF 常见 5–27MB；关闭后仍按单张上限（默认 8MB）丢超限的图
+- 🚫 **跳过 GIF**：默认开启。热榜 GIF 常见 5–27MB；关闭后仍按单张上限（默认 10MB）丢超限的图
 - 🌐 **中英别名**：`无聊图` / `daily` / `pic` 等写法均可
 
 ## Quick Start
@@ -31,13 +32,14 @@ Push Jandan hot boring pictures and ooxx on a schedule. Manual commands fetch by
 jandan 无聊图
 jandan 无聊图 随手拍
 jandan 4小时 -r
+摸鱼
 ```
 
 依赖 Koishi 的 `http` 服务（`inject: ['http']`）。
 
 ## Changelog
 
-当前版本 **1.2.7**：仍是一条合并转发。下载原图直接发，不再转 WebP。直接发标题 + 一帖一节点的正式转发，同一帖多图进同一个气泡。适配器超时不再打警告。下载前先发「正在解析煎蛋热榜…」，发出后不撤回。
+当前版本 **1.2.8**：新增 `摸鱼` 从无聊图热榜随机发一帖。口号改为「推送煎蛋梗图，快乐摸鱼」。单张上限默认 10MB。NapCat/LLOB 走同一套一帖一节点打包，不再分 OneBot 配置。
 
 ## License
 

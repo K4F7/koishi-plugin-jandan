@@ -14,6 +14,7 @@ import {
   mapLimit,
   packListForward,
   parseListNames,
+  pickRandomPost,
   preparePosts,
   rewriteImageUrl,
   type JandanPost,
@@ -301,6 +302,32 @@ describe('preparePosts', () => {
       'https://img.toto.im/large/small.gif',
     ])
     assert.equal(prepared[0].images[1].mime, 'image/gif')
+  })
+})
+
+describe('pickRandomPost', () => {
+  it('returns null for an empty list', () => {
+    assert.equal(pickRandomPost([]), null)
+  })
+
+  it('returns the only post', () => {
+    const posts = fakePosts(1, 2)
+    assert.equal(pickRandomPost(posts), posts[0])
+  })
+
+  it('always returns one of the given posts', () => {
+    const posts = fakePosts(5, 2)
+    for (let i = 0; i < 20; i++) {
+      const picked = pickRandomPost(posts)
+      assert.ok(picked && posts.includes(picked))
+    }
+  })
+
+  it('skips posts that have no images', () => {
+    const empty: PreparedPost = { author: 'nobody', images: [] }
+    assert.equal(pickRandomPost([empty]), null)
+    const posts = [...fakePosts(1), empty]
+    assert.equal(pickRandomPost(posts), posts[0])
   })
 })
 
