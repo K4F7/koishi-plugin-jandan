@@ -2,14 +2,13 @@ import { Bot, Context, Element, Schema, Session, h } from 'koishi'
 import {
   DEFAULT_MAX_IMAGE_BYTES,
   ListKind,
-  PreparedImage,
   PreparedList,
-  UPLOAD_CONCURRENCY,
   buildPayload,
+  composeForward,
   composeForwardEach,
-  composeForwardFromIds,
+  composeForwardFromUrls,
+  extractForwardImageSrcs,
   flattenImages,
-  mapLimit,
   parseListNames,
   pickRandomImage,
 } from './jandan'
@@ -45,33 +44,33 @@ export interface Target {
 export interface Config {
   lists: ListKind[]
   hour: number
-  minute: number
   skipGif: boolean
   maxImageMB: number
   waitTip: string
   sendTimeout: number
-  uploadConcurrency: number
-  debug: boolean
   targets: Target[]
 }
 
-export const Config: Schema<Config> = Schema.object({
-  lists: Schema.array(ListKindSchema).role('select').default(['daily']).description('定时推送的榜单。多个榜打进同一条合并转发，只发图。'),
-  hour: Schema.number().min(0).max(23).default(22).description('推送小时（服务器本地时区）。'),
-  minute: Schema.number().min(0).max(59).default(0).description('推送分钟。'),
-  skipGif: Schema.boolean().default(true).description('跳过全部 GIF。热榜 GIF 常见 5–27MB；关闭后仍受单张体积上限约束，超限的丢。'),
-  maxImageMB: Schema.number().min(0).max(50).default(DEFAULT_MAX_IMAGE_BYTES / 1024 / 1024).description('单张图片最大体积（MB）。超过则跳过该张，0 表示不限制。静态图一般远低于此值。'),
-  waitTip: Schema.string().default(DEFAULT_WAIT_TIP).description('下载、转码前先发这条提示。发出后默认不撤回。留空则不发。'),
-  sendTimeout: Schema.number().min(0).role('time').default(DEFAULT_SEND_TIMEOUT).description('发送合并转发时，临时把 OneBot 适配器的 responseTimeout 调到这个值（毫秒）。0 表示不改。'),
-  uploadConcurrency: Schema.number().min(1).max(16).default(UPLOAD_CONCURRENCY).description('OneBot 并发把图片私聊发给自己的数量。LLOB 对每条 send_private_msg 独立处理，调高可加快上传。'),
-  debug: Schema.boolean().default(true).description('打印拉取、转码、并发上传和合并转发的详细日志。测试完可关掉。'),
-  targets: Schema.array(Schema.object({
-    platform: Schema.string().required().description('平台名称。'),
-    selfId: Schema.string().required().description('机器人 ID。'),
-    channelId: Schema.string().required().description('频道 ID。'),
-    guildId: Schema.string().description('群组 ID。'),
-  })).role('table').description('定时推送目标。'),
-})
+export const Config: Schema<Config> = Schema.intersect([
+  Schema.object({
+    lists: Schema.array(ListKindSchema).role('select').default(['daily']).description('定时推送的榜单。多个榜打进同一条合并转发，只发图'),
+  }),
+  Schema.object({
+    hour: Schema.number().min(0).max(23).default(22).description('小时'),
+  }).description('推送时间'),
+  Schema.object({
+    skipGif: Schema.boolean().default(true).description('跳过 gif 图'),
+    maxImageMB: Schema.number().min(0).max(50).default(DEFAULT_MAX_IMAGE_BYTES / 1024 / 1024).description('单张图片最大体积（MB）'),
+    waitTip: Schema.string().default(DEFAULT_WAIT_TIP).description('等待信息'),
+    sendTimeout: Schema.number().min(0).role('time').default(DEFAULT_SEND_TIMEOUT).description('发送超时（毫秒）'),
+    targets: Schema.array(Schema.object({
+      platform: Schema.string().required().description('平台名称'),
+      selfId: Schema.string().required().description('机器人 ID'),
+      channelId: Schema.string().required().description('频道 ID'),
+      guildId: Schema.string().description('群组 ID'),
+    })).role('table').description('定时推送目标'),
+  }),
+])
 
 function msUntil(hour: number, minute: number) {
   const now = new Date()
@@ -108,12 +107,6 @@ function shortError(error: unknown) {
   return text.split(', args:')[0]
 }
 
-export function formatBytes(n: number) {
-  if (n < 1024) return `${n}B`
-  if (n < 1024 * 1024) return `${(n / 1024).toFixed(1)}KB`
-  return `${(n / 1024 / 1024).toFixed(2)}MB`
-}
-
 function firstMessageId(result: string | string[] | void | null) {
   if (Array.isArray(result)) return result[0]
   return result || undefined
@@ -128,18 +121,15 @@ async function recall(bot: { deleteMessage(channelId: string, id: string): Promi
   }
 }
 
+type OneBotInternal = {
+  getForwardMsg?(id: string): Promise<unknown>
+}
+
 const USAGE = '用法：jandan <榜单名...> [-r]\n榜单：无聊图 / 随手拍 / 4小时 / 3日 / 7日（也可用 daily / ooxx / 4hr / 3d / 7d）'
 
 export function apply(ctx: Context, config: Config) {
   const logger = ctx.logger('jandan')
   const waitTip = config.waitTip?.trim() ?? ''
-  const uploadConcurrency = Math.max(1, config.uploadConcurrency || UPLOAD_CONCURRENCY)
-  const privateChannel = (bot: Bot) => `private:${bot.selfId}`
-
-  function logDebug(message: string, ...args: unknown[]) {
-    if (config.debug) logger.info(message, ...args)
-    else logger.debug(message, ...args)
-  }
 
   function logSendError(error: unknown) {
     if (isAdapterTimeout(error)) {
@@ -153,9 +143,7 @@ export function apply(ctx: Context, config: Config) {
     if (!waitTip) return undefined
     try {
       const content = session.messageId ? `${h.quote(session.messageId)}${waitTip}` : waitTip
-      const id = firstMessageId(await session.send(content))
-      logDebug('wait tip sent id=%s', id)
-      return id
+      return firstMessageId(await session.send(content))
     } catch (error) {
       logger.warn(error)
       return undefined
@@ -190,22 +178,15 @@ export function apply(ctx: Context, config: Config) {
     }
   }
 
-  async function uploadImages(bot: Bot, images: PreparedImage[]) {
-    logDebug('upload %d images concurrency=%d to self=%s', images.length, uploadConcurrency, bot.selfId)
-    return mapLimit(images, uploadConcurrency, async (image, index) => {
-      const started = Date.now()
-      logDebug('upload %d/%d start %s %s', index + 1, images.length, image.mime, formatBytes(image.data.length))
-      try {
-        const result = await bot.sendPrivateMessage(bot.selfId, h.image(image.data, image.mime))
-        const id = firstMessageId(result)
-        logDebug('upload %d/%d %s %s %dms id=%s', index + 1, images.length, image.mime, formatBytes(image.data.length), Date.now() - started, id)
-        return id
-      } catch (error) {
-        logDebug('upload %d/%d %s %s failed: %s', index + 1, images.length, image.mime, formatBytes(image.data.length), shortError(error))
-        logSendError(error)
-        return undefined
-      }
-    })
+  async function readForwardImages(bot: Bot, messageId: string) {
+    const internal = (bot as Bot & { internal?: OneBotInternal }).internal
+    if (!internal?.getForwardMsg) return []
+    try {
+      return extractForwardImageSrcs(await internal.getForwardMsg(messageId))
+    } catch (error) {
+      logger.warn(error)
+      return []
+    }
   }
 
   async function sendHotlist(
@@ -214,44 +195,23 @@ export function apply(ctx: Context, config: Config) {
     prepared: PreparedList[],
     send: (payload: Element) => Promise<unknown>,
   ) {
-    const images = flattenImages(prepared.flatMap(item => item.posts))
-    const totalBytes = images.reduce((sum, image) => sum + image.data.length, 0)
-    logDebug('send %s:%s images=%d size=%s', bot.platform, channelId, images.length, formatBytes(totalBytes))
     if (bot.platform !== 'onebot') {
       return sendPayload(bot, () => send(composeForwardEach(prepared))).then(result => result.error)
     }
-
-    const started = Date.now()
-    const uploaded: string[] = []
-    let done = false
-    try {
-      await withResponseTimeout(bot, config.sendTimeout, async () => {
-        const ids = await uploadImages(bot, images)
-        for (const id of ids) if (id) uploaded.push(id)
-        if (uploaded.length === images.length && uploaded.length) {
-          const label = prepared.map(item => item.label).join(' ')
-          logDebug('uploaded %d images in %dms, send id-forward nodes=%d', uploaded.length, Date.now() - started, uploaded.length + 1)
-          const result = await send(composeForwardFromIds(label, uploaded))
-          logDebug('id-forward done in %dms id=%s', Date.now() - started, firstMessageId(result as string | string[] | void | null))
-          done = true
-          return
-        }
-        logDebug('concurrent upload %d/%d, fallback to one-image-per-node', uploaded.length, images.length)
-        const result = await send(composeForwardEach(prepared))
-        logDebug('fallback forward done in %dms id=%s', Date.now() - started, firstMessageId(result as string | string[] | void | null))
-        done = true
-      })
-    } catch (error) {
-      logSendError(error)
-      return error
-    } finally {
-      if (done && uploaded.length) {
-        await Promise.all(uploaded.map(id => recall(bot, privateChannel(bot), id)))
-        logDebug('recalled %d private uploads', uploaded.length)
-      } else if (uploaded.length) {
-        logDebug('keep %d private uploads after send failure', uploaded.length)
-      }
+    const images = flattenImages(prepared.flatMap(item => item.posts))
+    const packed = await sendPayload(bot, () => send(composeForward(prepared)))
+    if (packed.error && !isAdapterTimeout(packed.error)) return packed.error
+    if (!packed.id) return packed.error
+    const srcs = await readForwardImages(bot, packed.id)
+    if (srcs.length !== images.length) {
+      logger.warn('packed forward image count %d != %d, keep the packed message', srcs.length, images.length)
+      return packed.error
     }
+    const label = prepared.map(item => item.label).join(' ')
+    const replaced = await sendPayload(bot, () => send(composeForwardFromUrls(label, srcs)))
+    if (replaced.error && !isAdapterTimeout(replaced.error)) return replaced.error
+    if (!replaced.error) await recall(bot, channelId, packed.id)
+    return replaced.error
   }
 
   async function sendToTargets(prepared: PreparedList[]) {
@@ -268,16 +228,10 @@ export function apply(ctx: Context, config: Config) {
   }
 
   async function loadPrepared(kinds: ListKind[]) {
-    const started = Date.now()
-    logDebug('fetch lists %s skipGif=%s maxImageMB=%s', kinds.join(','), config.skipGif, config.maxImageMB)
-    const prepared = await buildPayload(ctx.http, kinds, {
+    return buildPayload(ctx.http, kinds, {
       skipGif: config.skipGif,
       maxBytes: config.maxImageMB > 0 ? Math.floor(config.maxImageMB * 1024 * 1024) : 0,
     })
-    const images = flattenImages(prepared.flatMap(item => item.posts))
-    const totalBytes = images.reduce((sum, image) => sum + image.data.length, 0)
-    logDebug('prepared lists=%d images=%d size=%s %dms', prepared.length, images.length, formatBytes(totalBytes), Date.now() - started)
-    return prepared
   }
 
   ctx.command('jandan [...names:string]', '获取煎蛋热榜')
@@ -309,7 +263,6 @@ export function apply(ctx: Context, config: Config) {
           await recall(session.bot, session.channelId, waitId)
           return '没有可发送的图片。'
         }
-        logDebug('random image %s %s', image.mime, formatBytes(image.data.length))
         const error = (await sendPayload(session.bot, () => session.send(h.image(image.data, image.mime)))).error
         if (error && !isAdapterTimeout(error)) {
           await recall(session.bot, session.channelId, waitId)
@@ -338,8 +291,8 @@ export function apply(ctx: Context, config: Config) {
 
   const tick = async () => {
     await schedule()
-    ctx.setTimeout(tick, msUntil(config.hour, config.minute))
+    ctx.setTimeout(tick, msUntil(config.hour, 0))
   }
 
-  ctx.setTimeout(tick, msUntil(config.hour, config.minute))
+  ctx.setTimeout(tick, msUntil(config.hour, 0))
 }

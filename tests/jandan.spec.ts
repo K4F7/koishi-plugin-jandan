@@ -1,11 +1,10 @@
 import assert from 'node:assert/strict'
 import { describe, it } from 'node:test'
-import { formatBytes, isAdapterTimeout, withResponseTimeout } from '../src/index'
+import { isAdapterTimeout, withResponseTimeout } from '../src/index'
 import {
   IMAGES_PER_NODE,
   composeForward,
   composeForwardEach,
-  composeForwardFromIds,
   composeForwardFromUrls,
   detectMime,
   encodeWebp,
@@ -171,18 +170,6 @@ describe('composeForwardEach', () => {
   })
 })
 
-describe('composeForwardFromIds', () => {
-  it('builds one forward of a title plus one id node per image', () => {
-    const packed = composeForwardFromIds('无聊图', ['111', '222'])
-    assert.equal(packed.attrs.forward, true)
-    assert.equal(packed.children[0].children.find(child => child.type === 'text')?.attrs.content, '无聊图')
-    assert.deepEqual(
-      packed.children.slice(1).map(node => node.attrs.id),
-      ['111', '222'],
-    )
-  })
-})
-
 describe('composeForwardFromUrls', () => {
   it('builds one forward of a title plus one url image per node', () => {
     const packed = composeForwardFromUrls('7日无聊图', [
@@ -325,14 +312,6 @@ describe('encodeWebp', () => {
     assert.equal(detectMime(out.data), 'image/webp')
     assert.equal(out.data.subarray(0, 4).toString(), 'RIFF')
     assert.equal(out.data.length < jpeg.length, true)
-  })
-})
-
-describe('formatBytes', () => {
-  it('formats byte sizes', () => {
-    assert.equal(formatBytes(500), '500B')
-    assert.equal(formatBytes(2048), '2.0KB')
-    assert.equal(formatBytes(2 * 1024 * 1024), '2.00MB')
   })
 })
 
