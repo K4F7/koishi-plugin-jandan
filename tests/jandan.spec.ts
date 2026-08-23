@@ -162,11 +162,21 @@ describe('composeForward', () => {
 })
 
 describe('composeForwardEach', () => {
-  it('keeps a title then one image per node', () => {
-    const packed = composeForwardEach([{ label: '4小时', posts: fakePosts(21) }])
+  it('keeps a title then one node per post, packing that post\'s images together', () => {
+    const packed = composeForwardEach([{
+      label: '4小时',
+      posts: [
+        ...fakePosts(2, 1),
+        ...fakePosts(1, 3),
+      ],
+    }])
     assert.equal(packed.attrs.forward, true)
-    assert.equal(packed.children.length, 22)
-    assert.equal(packed.children.slice(1).every(node => node.children.length === 1 && node.children[0].type === 'img'), true)
+    assert.equal(packed.children.length, 4)
+    assert.deepEqual(
+      packed.children.slice(1).map(node => node.children.length),
+      [1, 1, 3],
+    )
+    assert.equal(packed.children.slice(1).every(node => node.children.every(child => child.type === 'img')), true)
   })
 })
 

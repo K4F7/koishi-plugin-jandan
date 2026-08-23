@@ -4,11 +4,7 @@ import {
   ListKind,
   PreparedList,
   buildPayload,
-  composeForward,
   composeForwardEach,
-  composeForwardFromUrls,
-  extractForwardImageSrcs,
-  flattenImages,
   parseListNames,
   pickRandomImage,
 } from './jandan'
@@ -121,10 +117,6 @@ async function recall(bot: { deleteMessage(channelId: string, id: string): Promi
   }
 }
 
-type OneBotInternal = {
-  getForwardMsg?(id: string): Promise<unknown>
-}
-
 const USAGE = '用法：jandan <榜单名...> [-r]\n榜单：无聊图 / 随手拍 / 4小时 / 3日 / 7日（也可用 daily / ooxx / 4hr / 3d / 7d）'
 
 export function apply(ctx: Context, config: Config) {
@@ -178,40 +170,12 @@ export function apply(ctx: Context, config: Config) {
     }
   }
 
-  async function readForwardImages(bot: Bot, messageId: string) {
-    const internal = (bot as Bot & { internal?: OneBotInternal }).internal
-    if (!internal?.getForwardMsg) return []
-    try {
-      return extractForwardImageSrcs(await internal.getForwardMsg(messageId))
-    } catch (error) {
-      logger.warn(error)
-      return []
-    }
-  }
-
   async function sendHotlist(
     bot: Bot,
-    channelId: string,
     prepared: PreparedList[],
     send: (payload: Element) => Promise<unknown>,
   ) {
-    if (bot.platform !== 'onebot') {
-      return sendPayload(bot, () => send(composeForwardEach(prepared))).then(result => result.error)
-    }
-    const images = flattenImages(prepared.flatMap(item => item.posts))
-    const packed = await sendPayload(bot, () => send(composeForward(prepared)))
-    if (packed.error && !isAdapterTimeout(packed.error)) return packed.error
-    if (!packed.id) return packed.error
-    const srcs = await readForwardImages(bot, packed.id)
-    if (srcs.length !== images.length) {
-      logger.warn('packed forward image count %d != %d, keep the packed message', srcs.length, images.length)
-      return packed.error
-    }
-    const label = prepared.map(item => item.label).join(' ')
-    const replaced = await sendPayload(bot, () => send(composeForwardFromUrls(label, srcs)))
-    if (replaced.error && !isAdapterTimeout(replaced.error)) return replaced.error
-    if (!replaced.error) await recall(bot, channelId, packed.id)
-    return replaced.error
+    return sendPayload(bot, () => send(composeForwardEach(prepared))).then(result => result.error)
   }
 
   async function sendToTargets(prepared: PreparedList[]) {
@@ -220,7 +184,6 @@ export function apply(ctx: Context, config: Config) {
       if (!bot) continue
       await sendHotlist(
         bot,
-        target.channelId,
         prepared,
         payload => bot.sendMessage(target.channelId, payload, target.guildId),
       )
@@ -271,7 +234,7 @@ export function apply(ctx: Context, config: Config) {
         return
       }
       if (!session.channelId) return '发送失败了，一会儿再试。'
-      const error = await sendHotlist(session.bot, session.channelId, prepared, payload => session.send(payload))
+      const error = await sendHotlist(session.bot, prepared, payload => session.send(payload))
       if (error && !isAdapterTimeout(error)) {
         await recall(session.bot, session.channelId, waitId)
         return '发送失败了，一会儿再试。OneBot 超时可把适配器 responseTimeout 调大。'

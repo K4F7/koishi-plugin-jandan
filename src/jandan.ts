@@ -289,7 +289,9 @@ export function packImageNodes(posts: PreparedPost[]) {
 }
 
 export function packImageNodesEach(posts: PreparedPost[]) {
-  return flattenImages(posts).map(image => h('message', [h.image(image.data, image.mime)]))
+  return posts
+    .filter(post => post.images.length)
+    .map(post => h('message', post.images.map(image => h.image(image.data, image.mime))))
 }
 
 export function packListForward(label: string, posts: PreparedPost[]) {
