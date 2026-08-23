@@ -1,7 +1,7 @@
 {
   "name": "koishi-plugin-jandan",
   "description": "推送煎蛋梗图，快乐摸鱼",
-  "version": "1.2.8",
+  "version": "1.2.9",
   "main": "lib/index.js",
   "typings": "lib/index.d.ts",
   "files": [

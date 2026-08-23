@@ -226,27 +226,22 @@ export function apply(ctx: Context, config: Config) {
     .shortcut('摸鱼')
     .action(async ({ session }) => {
       if (!session) return
-      const waitId = await sendWait(session)
       let prepared: PreparedList[]
       try {
         prepared = await loadPrepared(['daily'])
       } catch (error) {
         logger.warn(error)
-        await recall(session.bot, session.channelId, waitId)
         return '拉取出错了，一会儿再试。'
       }
       if (!prepared.length) {
-        await recall(session.bot, session.channelId, waitId)
         return '没有可发送的图片。'
       }
       const post = pickRandomPost(prepared.flatMap(item => item.posts))
       if (!post) {
-        await recall(session.bot, session.channelId, waitId)
         return '没有可发送的图片。'
       }
       const error = await sendPayload(session.bot, () => session.send(post.images.map(img => h.image(img.data, img.mime))))
       if (error && !isAdapterTimeout(error)) {
-        await recall(session.bot, session.channelId, waitId)
         return '发送失败了，一会儿再试。OneBot 超时可把适配器 responseTimeout 调大。'
       }
     })
